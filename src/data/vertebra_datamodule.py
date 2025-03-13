@@ -1,7 +1,9 @@
 from typing import Any, Dict, Optional, Tuple
 import os
 from glob import glob
-
+from pathlib import Path 
+import random
+import torchio as tio
 import nibabel as nib
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
@@ -10,30 +12,58 @@ from lightning import LightningDataModule
 
 class NiftiDataset(Dataset):
     """A simple Dataset for loading NIfTI images from a directory."""
-    def __init__(self, data_dir: str, transform: Optional[Any] = None) -> None:
+    def __init__(self, data_files: list, train: bool = False) -> None:
         """
         Args:
             data_dir (str): Path to directory containing NIfTI files.
             transform (callable, optional): Optional transform to be applied on a sample.
         """
-        self.data_dir = data_dir
-        self.transform = transform
+        self.train = train
         # Find files with .nii or .nii.gz extension.
-        self.nifti_files = sorted(glob(os.path.join(data_dir, "*.nii*")))
+        self.nifti_files = data_files
         if not self.nifti_files:
-            raise ValueError(f"No NIfTI files found in {data_dir}")
+            raise ValueError(f"No NIfTI files found in {data_files}")
 
     def __len__(self) -> int:
         return len(self.nifti_files)
+    
+
+    #may want to add this idk: 
+     #random noise
+        #tio.RandomNoise(
+        #    mean=0.0,
+        #    std=(0, 0.1),
+        #   p=0.5
+        #)
+    def data_aug(self):
+        train_transform = tio.Compose([
+        tio.RandomAffine(
+            scales=(0.9, 1.1),       
+            degrees=10,             
+            translation=5,           
+            p=0.75                  
+        ),
+        tio.RandomMotion(
+            degrees = 10,
+            translation=0,
+        )
+        ])
+        size_transform = tio.Resize((128, 128, 128))
+        return train_transform, size_transform
+    
 
     def __getitem__(self, index: int) -> torch.Tensor:
         file_path = self.nifti_files[index]
         # Load the image using nibabel
         img = nib.load(file_path).get_fdata()
+        train_aug, resize = self.data_aug()
+
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
-        if self.transform:
-            img = self.transform(img)
+        img = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+        if self.train:
+            img = train_aug(img)
+        img = resize(img)
         return img
 
 
@@ -46,11 +76,9 @@ class NiftiDataModule(LightningDataModule):
         batch_size: int = 4,
         num_workers: int = 0,
         pin_memory: bool = False,
-        transform: Optional[Any] = None,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(logger=False)
-        self.transform = transform
         self.data_train = None
         self.data_val = None
         self.data_test = None
@@ -60,17 +88,37 @@ class NiftiDataModule(LightningDataModule):
         pass
 
     def setup(self, stage: Optional[str] = None) -> None:
-        dataset = NiftiDataset(self.hparams.data_dir, transform=self.transform)
-        total_len = len(dataset)
-        train_len, val_len, test_len = self.hparams.train_val_test_split
-        if train_len + val_len + test_len != total_len:
-            raise ValueError(
-                f"Sum of train, val, and test lengths ({train_len + val_len + test_len}) does not match dataset size ({total_len})."
-            )
-        self.data_train, self.data_val, self.data_test = random_split(
-            dataset, lengths=[train_len, val_len, test_len],
-            generator=torch.Generator().manual_seed(42)
-        )
+        """
+        Scans data_dir for NIfTI files and splits them into:
+        - train (80%)
+        - validation (10%)
+        - test (10%)
+        """
+        # Convert the data directory to a Path object.
+        #print(Path(self.hparams.data_dir))
+        data_dir = Path(str(self.hparams.data_dir))
+        
+        # Find all NIfTI files (supporting both .nii and .nii.gz extensions).
+        nifti_files = sorted(list(data_dir.rglob("*.nii")) + list(data_dir.rglob("*.nii.gz")))
+        if not nifti_files:
+            raise FileNotFoundError(f"No NIfTI files found in {data_dir}")
+        
+        # Shuffle the file list to ensure randomness.
+        random.shuffle(nifti_files)
+        n = len(nifti_files)
+        train_count = int(0.8 * n)
+        val_count = int(0.1 * n)
+        # The test set will be the remainder.
+        
+        if stage is None or stage == "fit":
+            train_files = nifti_files[:train_count]
+            val_files = nifti_files[train_count:train_count + val_count]
+            self.data_train = NiftiDataset(train_files, train=True)
+            self.data_val = NiftiDataset(val_files, train=False)
+        
+        if stage is None or stage == "test":
+            test_files = nifti_files[train_count + val_count:]
+            self.data_test = NiftiDataset(test_files, train=False)
 
     def train_dataloader(self) -> DataLoader[Any]:
         return DataLoader(
