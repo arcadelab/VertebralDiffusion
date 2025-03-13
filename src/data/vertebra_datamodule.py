@@ -35,35 +35,53 @@ class NiftiDataset(Dataset):
         #    std=(0, 0.1),
         #   p=0.5
         #)
+
+#   tio.RandomMotion(
+     #       degrees = 10,
+     #       translation=0,
+     #   )
     def data_aug(self):
         train_transform = tio.Compose([
         tio.RandomAffine(
             scales=(0.9, 1.1),       
-            degrees=10,             
-            translation=5,           
+            degrees=1,             
+            translation=0,           
             p=0.75                  
         ),
-        tio.RandomMotion(
-            degrees = 10,
-            translation=0,
-        )
+        
         ])
         size_transform = tio.Resize((128, 128, 128))
-        return train_transform, size_transform
+        pad_transform = tio.CropOrPad(
+            target_shape = (128, 128, 128),
+            padding_mode='edge'
+        ) # constant_values =-1024
+
+        return train_transform, size_transform, pad_transform
     
 
     def __getitem__(self, index: int) -> torch.Tensor:
         file_path = self.nifti_files[index]
         # Load the image using nibabel
-        img = nib.load(file_path).get_fdata()
-        train_aug, resize = self.data_aug()
+        img_nib = nib.load(file_path)
+        img = img_nib.get_fdata()
+        train_aug, resize, pad_transform = self.data_aug()
 
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
         img = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
         if self.train:
             img = train_aug(img)
-        img = resize(img)
+        #img = resize(img)
+        img = resize(img)#pad_transform(img)
+        print(img.shape)
+
+        #augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
+        #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
+
+        # Define save path
+        #augmented_path = file_path.replace('.nii', '_augmented.nii')
+        #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
+        #nib.save(augmented_img_nib, augmented_path)
         return img
 
 

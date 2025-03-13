@@ -14,11 +14,11 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 from vq_gan_3d.utils import shift_dim, adopt_weight, comp_getattr
-from vq_gan_3d.model.lpips import LPIPS
-from vq_gan_3d.model.codebook import Codebook
+from vq_gan_3d.lpips import LPIPS
+from vq_gan_3d.codebook import Codebook
 from monai.metrics.regression import SSIMMetric, PSNRMetric
 from monai.inferers import SlidingWindowInferer
-from vq_gan_3d.model import VQGAN
+from vq_gan_3d import VQGAN
 
 
 def silu(x):
