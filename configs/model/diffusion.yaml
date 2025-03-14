@@ -1,0 +1,24 @@
+_target_: src.models.ddpm.Unet3D
+
+diffusion:
+  timesteps: 1000              
+  loss_type: "l1"              
+  use_dynamic_thres: false    
+  dynamic_thres_percentile: 0.9  
+  image_size: 64               
+  num_frames: 16               
+  channels: 3                 
+  text_use_bert_cls: false     
+  vqgan_ckpt: null             
+
+model:
+  embedding_dim: 64           
+  n_hiddens: 32                
+  downsample: [2, 2, 2]        
+  image_channels: 3           
+  norm_type: group            
+  padding_type: replicate      
+  num_groups: 32               
+
+optimizer:
+  lr: 3e-4                     

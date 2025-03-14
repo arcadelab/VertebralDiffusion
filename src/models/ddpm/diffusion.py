@@ -14,6 +14,7 @@ from torchvision import transforms as T, utils
 from torch.cuda.amp import autocast, GradScaler
 from PIL import Image
 
+from lightning import LightningModule
 from tqdm import tqdm
 from einops import rearrange
 from einops_exts import check_shape, rearrange_many
@@ -377,7 +378,7 @@ class Attention(nn.Module):
 # model
 
 
-class Unet3D(nn.Module):
+class Unet3D(LightningModule):
     def __init__(
         self,
         dim,
