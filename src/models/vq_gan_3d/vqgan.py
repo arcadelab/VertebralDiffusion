@@ -1,5 +1,4 @@
 """Adapted from https://github.com/SongweiGe/TATS"""
-
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved
 
 import math
@@ -8,15 +7,15 @@ import numpy as np
 import pickle as pkl
 
 import pytorch_lightning as pl
+from lightning import LightningModule
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from vq_gan_3d.utils import shift_dim, adopt_weight, comp_getattr
-from vq_gan_3d.lpips import LPIPS
-from vq_gan_3d.codebook import Codebook
-from monai.metrics.regression import SSIMMetric, PSNRMetric
+from .utils import shift_dim, adopt_weight, comp_getattr
+from .lpips import LPIPS
+from .codebook import Codebook
 
 
 def silu(x):
@@ -24,6 +23,8 @@ def silu(x):
 
 
 class SiLU(nn.Module):
+    """Applies the Sigmoid Linear Unit (SiLU) function element-wise"""
+
     def __init__(self):
         super(SiLU, self).__init__()
 
@@ -32,6 +33,7 @@ class SiLU(nn.Module):
 
 
 def hinge_d_loss(logits_real, logits_fake):
+    """Hinge loss for discriminator"""
     loss_real = torch.mean(F.relu(1.0 - logits_real))
     loss_fake = torch.mean(F.relu(1.0 + logits_fake))
     d_loss = 0.5 * (loss_real + loss_fake)
@@ -39,6 +41,7 @@ def hinge_d_loss(logits_real, logits_fake):
 
 
 def vanilla_d_loss(logits_real, logits_fake):
+    """Vanilla loss for discriminator."""
     d_loss = 0.5 * (
         torch.mean(torch.nn.functional.softplus(-logits_real))
         + torch.mean(torch.nn.functional.softplus(logits_fake))
@@ -46,90 +49,99 @@ def vanilla_d_loss(logits_real, logits_fake):
     return d_loss
 
 
-class VQGAN(pl.LightningModule):
-    def __init__(self, cfg, **kwargs):
+class VQGAN3D(LightningModule):
+    def __init__(
+        self,
+        n_codes: int = 2048,
+        embedding_dim: int = 64,
+        lr: float = 3e-4,
+        n_hiddens: int = 32,
+        downsample: list[int] = [2, 2, 2],
+        image_channels: int = 3,
+        norm_type: str = "group",
+        padding_type: str = "replicate",
+        num_groups: int = 32,
+        disc_channels: int = 64,
+        disc_layers: int = 3,
+        discriminator_iter_start: int = 50000,
+        disc_loss_type: str = "hinge",
+        image_gan_weight: float = 1.0,
+        video_gan_weight: float = 1.0,
+        l1_weight: float = 4.0,
+        gan_feat_weight: float = 1.0,
+        perceptual_weight: float = 1.0,
+        # i3d_feat: bool = False,
+        restart_thres: float = 0.0,
+        no_random_restart: bool = False,
+    ):
         super().__init__()
-        self.cfg = cfg
-        self.embedding_dim = cfg.model.embedding_dim
+        self.lr = lr
+        self.discriminator_iter_start = discriminator_iter_start
+        #do manual optimization bc of multiple optimizers
         self.automatic_optimization = False
-        self.n_codes = cfg.model.n_codes
-
         self.encoder = Encoder(
-            cfg.model.n_hiddens,
-            cfg.model.downsample,
-            cfg.dataset.image_channels,
-            cfg.model.norm_type,
-            cfg.model.padding_type,
-            cfg.model.num_groups,
-            ch_muls=cfg.model.ch_muls,
+            n_hiddens,
+            downsample,
+            image_channels,
+            norm_type,
+            padding_type,
+            num_groups,
         )
-        use_larger_decoder = False
-        if "larger_decoder" in kwargs.keys():
-            use_larger_decoder = kwargs["larger_decoder"]
-        elif "larger_decoder" in cfg.model.keys():
-            use_larger_decoder = cfg.model.larger_decoder
         self.decoder = Decoder(
-            cfg.model.n_hiddens,
-            cfg.model.downsample,
-            cfg.dataset.image_channels,
-            cfg.model.norm_type,
-            cfg.model.num_groups,
-            ch_muls=cfg.model.ch_muls,
-            larger_decoder= use_larger_decoder,
+            n_hiddens,
+            downsample,
+            image_channels,
+            norm_type,
+            num_groups,
         )
         self.enc_out_ch = self.encoder.out_channels
-
         self.pre_vq_conv = SamePadConv3d(
             self.enc_out_ch,
-            cfg.model.embedding_dim,
+            embedding_dim,
             1,
-            padding_type=cfg.model.padding_type,
+            padding_type=padding_type,
         )
-        self.post_vq_conv = SamePadConv3d(cfg.model.embedding_dim, self.enc_out_ch, 1)
+        self.post_vq_conv = SamePadConv3d(embedding_dim, self.enc_out_ch, 1)
 
         self.codebook = Codebook(
-            cfg.model.n_codes,
-            cfg.model.embedding_dim,
-            no_random_restart=cfg.model.no_random_restart,
-            restart_thres=cfg.model.restart_thres,
+            n_codes,
+            embedding_dim,
+            no_random_restart=no_random_restart,
+            restart_thres=restart_thres,
         )
-        # self.classifier = nn.Sequential(nn.Conv3d(self.enc_out_ch, 1,kernel_size=4,stride=2,padding=2), nn.ReLU(),
-        #                                 nn.Linear(self.enc_out_ch*self.enc_out_ch//4, 1), nn.Sigmoid()
-        #                                 )
-        self.unique_indices = set()
 
-        self.gan_feat_weight = cfg.model.gan_feat_weight
+        self.gan_feat_weight = gan_feat_weight
         # TODO: Changed batchnorm from sync to normal
         self.image_discriminator = NLayerDiscriminator(
-            cfg.dataset.image_channels,
-            cfg.model.disc_channels,
-            cfg.model.disc_layers,
+            image_channels,
+            disc_channels,
+            disc_layers,
             norm_layer=nn.BatchNorm2d,
         )
         self.video_discriminator = NLayerDiscriminator3D(
-            cfg.dataset.image_channels,
-            cfg.model.disc_channels,
-            cfg.model.disc_layers,
+            image_channels,
+            disc_channels,
+            disc_layers,
             norm_layer=nn.BatchNorm3d,
         )
 
-        if cfg.model.disc_loss_type == "vanilla":
+        if disc_loss_type == "vanilla":
             self.disc_loss = vanilla_d_loss
-        elif cfg.model.disc_loss_type == "hinge":
+        elif disc_loss_type == "hinge":
             self.disc_loss = hinge_d_loss
+        else:
+            raise NotImplementedError(
+                f"Discriminator loss type {disc_loss_type} not implemented"
+            )
 
         self.perceptual_model = LPIPS().eval()
 
-        self.image_gan_weight = cfg.model.image_gan_weight
-        self.video_gan_weight = cfg.model.video_gan_weight
+        self.image_gan_weight = image_gan_weight
+        self.video_gan_weight = video_gan_weight
 
-        self.perceptual_weight = cfg.model.perceptual_weight
+        self.perceptual_weight = perceptual_weight
 
-        self.l1_weight = cfg.model.l1_weight
-        self.hc_weight = cfg.model.hc_weight
-        self.lc_weight = cfg.model.lc_weight
-        self.ssim_metric = SSIMMetric(spatial_dims=3, data_range=5)
-        self.psnr_metric = PSNRMetric(max_val=5)
+        self.l1_weight = l1_weight
         self.save_hyperparameters()
 
     def encode(self, x, include_embeddings=False, quantize=True):
@@ -152,32 +164,16 @@ class VQGAN(pl.LightningModule):
 
     def forward(self, x, optimizer_idx=None, log_image=False):
         B, C, T, H, W = x.shape
-        # print(f"x.shape: {x.shape}, x.min(): {x.min()}, x.max(): {x.max()}")
         # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
         z = self.pre_vq_conv(self.encoder(x))
         vq_output = self.codebook(z)
-        self.unique_indices.update(
-            torch.unique(vq_output["encodings"].detach()).tolist()
-        )
-
         x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
-        assert (
-            x_recon.shape == x.shape
-        ), f"SHAPE MISMATCH, x_recon.shape: {x_recon.shape}, x.shape: {x.shape}"
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
         recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
-        lc_mask = torch.where(
-            torch.logical_and(x.detach() > 1.5, x.detach() < 2.75),
-            torch.ones_like(x),
-            torch.zeros_like(x).to(x.device),
-        ).float()
-        hc_mask = torch.where(
-            x.detach() > 2.75, torch.ones_like(x), torch.zeros_like(x).to(x.device)
-        ).float()
-        recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
-        recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
+        # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
 
         # Selects one random 2D image from each 3D Image
-        frame_idx = torch.randint(0, T, [B]).to(x.device)
+        frame_idx = torch.randint(0, T, [B]).cuda()
         frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
         frames = torch.gather(x, 2, frame_idx_selected).squeeze(2)
         frames_recon = torch.gather(x_recon, 2, frame_idx_selected).squeeze(2)
@@ -206,7 +202,7 @@ class VQGAN(pl.LightningModule):
                 + self.video_gan_weight * g_video_loss
             )
             disc_factor = adopt_weight(
-                self.global_step, threshold=self.cfg.model.discriminator_iter_start
+                self.global_step, threshold=self.discriminator_iter_start
             )
             aeloss = disc_factor * g_loss
 
@@ -242,7 +238,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/g_video_loss",
@@ -250,7 +245,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/image_gan_feat_loss",
@@ -258,7 +252,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/video_gan_feat_loss",
@@ -266,7 +259,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/perceptual_loss",
@@ -275,7 +267,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/recon_loss",
@@ -284,7 +275,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/aeloss",
@@ -293,7 +283,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/commitment_loss",
@@ -302,7 +291,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/perplexity",
@@ -311,10 +299,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
-            )
-            self.log(
-                "train/codebook_util_rate", len(self.unique_indices) / self.n_codes
             )
             return (
                 recon_loss,
@@ -327,11 +311,6 @@ class VQGAN(pl.LightningModule):
 
         if optimizer_idx == 1:
             # Train discriminator
-            disc_factor = adopt_weight(
-                self.global_step, threshold=self.cfg.model.discriminator_iter_start
-            )
-            if disc_factor < 1e-4:
-                return 0
             logits_image_real, _ = self.image_discriminator(frames.detach())
             logits_video_real, _ = self.video_discriminator(x.detach())
 
@@ -340,7 +319,10 @@ class VQGAN(pl.LightningModule):
 
             d_image_loss = self.disc_loss(logits_image_real, logits_image_fake)
             d_video_loss = self.disc_loss(logits_video_real, logits_video_fake)
-            discloss = 10 * disc_factor * (
+            disc_factor = adopt_weight(
+                self.global_step, threshold=self.discriminator_iter_start
+            )
+            discloss = disc_factor * (
                 self.image_gan_weight * d_image_loss
                 + self.video_gan_weight * d_video_loss
             )
@@ -351,7 +333,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/logits_image_fake",
@@ -359,7 +340,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/logits_video_real",
@@ -367,7 +347,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/logits_video_fake",
@@ -375,7 +354,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/d_image_loss",
@@ -383,7 +361,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/d_video_loss",
@@ -391,7 +368,6 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             self.log(
                 "train/discloss",
@@ -400,138 +376,65 @@ class VQGAN(pl.LightningModule):
                 logger=True,
                 on_step=True,
                 on_epoch=True,
-                sync_dist=True,
             )
             return discloss
 
         perceptual_loss = (
-            self.perceptual_model(frames, frames_recon).mean() * self.perceptual_weight
+            self.perceptual_model(frames, frames_recon) * self.perceptual_weight
         )
         return recon_loss, x_recon, vq_output, perceptual_loss
 
-    def training_step(self, batch, batch_idx):
-        opt1, opt2 = self.optimizers()
-        opt1.zero_grad()
-        opt2.zero_grad()
-
-        x = batch["ct"].as_tensor()
-        recon_loss, x_recon, vq_output, aeloss, perceptual_loss, gan_feat_loss = (
-            self.forward(x, 0)
-        )
-        commitment_loss = vq_output["commitment_loss"]
-        loss = recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
-        self.manual_backward(loss)
-        opt1.step()
-
-        self.ssim_metric(x_recon, x)
-        self.psnr_metric(x_recon, x)
-        ssim = self.ssim_metric.aggregate()
-        psnr = self.psnr_metric.aggregate()
-        self.log(
-            "train/ssim",
-            ssim,
-            on_epoch=True,
-            on_step=True,
-            logger=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            "train/psnr",
-            psnr,
-            on_epoch=True,
-            on_step=True,
-            logger=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-
-        discloss = self.forward(x, 1)
-        if discloss < 1e-4:
-            return loss
-        loss = discloss
-        self.manual_backward(loss)
-        opt2.step()
+    def training_step(self, batch, batch_idx, optimizer_idx):
+        x = batch["data"]
+        if optimizer_idx == 0:
+            (
+                recon_loss,
+                _,
+                vq_output,
+                aeloss,
+                perceptual_loss,
+                gan_feat_loss,
+            ) = self.forward(x, optimizer_idx)
+            commitment_loss = vq_output["commitment_loss"]
+            loss = (
+                recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
+            )
+        if optimizer_idx == 1:
+            discloss = self.forward(x, optimizer_idx)
+            loss = discloss
         return loss
 
-    def on_train_epoch_end(
-        self,
-    ) -> None:
-        self.ssim_metric.reset()
-        self.psnr_metric.reset()
-        self.unique_indices = set()
-
     def validation_step(self, batch, batch_idx):
-        x = batch["ct"].as_tensor()  # TODO: batch['stft']
-        recon_loss, x_recon, vq_output, perceptual_loss = self.forward(x)
-        self.log("val/recon_loss", recon_loss, prog_bar=True, sync_dist=True)
-        self.log("val/perceptual_loss", perceptual_loss, prog_bar=True, sync_dist=True)
-        self.log(
-            "val/perplexity", vq_output["perplexity"], prog_bar=True, sync_dist=True
-        )
-        self.log(
-            "val/commitment_loss",
-            vq_output["commitment_loss"],
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.ssim_metric(x_recon, x)
-        self.psnr_metric(x_recon, x)
-        ssim = self.ssim_metric.aggregate()
-        psnr = self.psnr_metric.aggregate()
-        self.log(
-            "val/ssim",
-            ssim,
-            on_epoch=True,
-            on_step=True,
-            logger=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-        self.log(
-            "val/psnr",
-            psnr,
-            on_epoch=True,
-            on_step=True,
-            logger=True,
-            prog_bar=True,
-            sync_dist=True,
-        )
-
-    def on_validation_epoch_end(
-        self,
-    ):
-        self.ssim_metric.reset()
-        self.psnr_metric.reset()
-        self.unique_indices = set()
+        x = batch["data"]  # TODO: batch['stft']
+        recon_loss, _, vq_output, perceptual_loss = self.forward(x)
+        self.log("val/recon_loss", recon_loss, prog_bar=True)
+        self.log("val/perceptual_loss", perceptual_loss, prog_bar=True)
+        self.log("val/perplexity", vq_output["perplexity"], prog_bar=True)
+        self.log("val/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
 
     def configure_optimizers(self):
-        lr = self.cfg.model.lr
         opt_ae = torch.optim.Adam(
             list(self.encoder.parameters())
             + list(self.decoder.parameters())
             + list(self.pre_vq_conv.parameters())
             + list(self.post_vq_conv.parameters())
             + list(self.codebook.parameters()),
-            lr=lr,
+            lr=self.lr,
             betas=(0.5, 0.9),
-            eps=1e-4,
         )
         opt_disc = torch.optim.Adam(
             list(self.image_discriminator.parameters())
             + list(self.video_discriminator.parameters()),
-            lr=lr,
+            lr=self.lr,
             betas=(0.5, 0.9),
-            eps=1e-4,
         )
         return [opt_ae, opt_disc], []
 
     def log_images(self, batch, **kwargs):
         log = dict()
-        x = batch["ct"].as_tensor()
+        x = batch["data"]
         x = x.to(self.device)
         frames, frames_rec, _, _ = self(x, log_image=True)
-        print(f"frames.shape: {frames.shape}")
         log["inputs"] = frames
         log["reconstructions"] = frames_rec
         # log['mean_org'] = batch['mean_org']
@@ -540,7 +443,7 @@ class VQGAN(pl.LightningModule):
 
     def log_videos(self, batch, **kwargs):
         log = dict()
-        x = batch["ct"].as_tensor()
+        x = batch["data"]
         _, _, x, x_rec = self(x, log_image=True)
         log["inputs"] = x
         log["reconstructions"] = x_rec
@@ -554,7 +457,7 @@ def Normalize(in_channels, norm_type="group", num_groups=32):
     if norm_type == "group":
         # TODO Changed num_groups from 32 to 8
         return torch.nn.GroupNorm(
-            num_groups=num_groups, num_channels=in_channels, eps=1e-3, affine=True
+            num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True
         )
     elif norm_type == "batch":
         return torch.nn.SyncBatchNorm(in_channels)
@@ -569,7 +472,6 @@ class Encoder(nn.Module):
         norm_type="group",
         padding_type="replicate",
         num_groups=32,
-        ch_muls=[],
     ):
         super().__init__()
         n_times_downsample = np.array([int(math.log2(d)) for d in downsample])
@@ -580,15 +482,10 @@ class Encoder(nn.Module):
             image_channel, n_hiddens, kernel_size=3, padding_type=padding_type
         )
 
-        if len(ch_muls) == 0:
-            ch_muls = [2**i for i in range(max_ds + 1)]
-        else:
-            ch_muls = [1] + ch_muls
-
         for i in range(max_ds):
             block = nn.Module()
-            in_channels = n_hiddens * ch_muls[i]
-            out_channels = n_hiddens * ch_muls[i + 1]
+            in_channels = n_hiddens * 2**i
+            out_channels = n_hiddens * 2 ** (i + 1)
             stride = tuple([2 if d > 0 else 1 for d in n_times_downsample])
             block.down = SamePadConv3d(
                 in_channels, out_channels, 4, stride=stride, padding_type=padding_type
@@ -616,29 +513,14 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(
-        self,
-        n_hiddens,
-        upsample,
-        image_channel,
-        norm_type="group",
-        num_groups=32,
-        ch_muls=[],
-        larger_decoder=False,
+        self, n_hiddens, upsample, image_channel, norm_type="group", num_groups=32
     ):
         super().__init__()
 
         n_times_upsample = np.array([int(math.log2(d)) for d in upsample])
         max_us = n_times_upsample.max()
 
-        if len(ch_muls) == 0:
-            ch_muls = [2**i for i in range(max_us + 1)]
-            if larger_decoder:
-                ch_muls = ch_muls[1:] + [ch_muls[-1]]
-        else:
-            ch_muls = [1] + ch_muls
-        ch_muls.reverse()
-
-        in_channels = n_hiddens * ch_muls[0]
+        in_channels = n_hiddens * 2**max_us
         self.final_block = nn.Sequential(
             Normalize(in_channels, norm_type, num_groups=num_groups), SiLU()
         )
@@ -646,8 +528,8 @@ class Decoder(nn.Module):
         self.conv_blocks = nn.ModuleList()
         for i in range(max_us):
             block = nn.Module()
-            in_channels = n_hiddens * ch_muls[i]
-            out_channels = n_hiddens * ch_muls[i + 1]
+            in_channels = in_channels if i == 0 else n_hiddens * 2 ** (max_us - i + 1)
+            out_channels = n_hiddens * 2 ** (max_us - i)
             us = tuple([2 if d > 0 else 1 for d in n_times_upsample])
             block.up = SamePadConvTranspose3d(in_channels, out_channels, 4, stride=us)
             block.res1 = ResBlock(
@@ -717,7 +599,7 @@ class ResBlock(nn.Module):
         return x + h
 
 
-# Does not support dilation. I think stride here must be 1 in order for this to be same convolution
+# Does not support dilation
 class SamePadConv3d(nn.Module):
     def __init__(
         self,
@@ -803,7 +685,7 @@ class NLayerDiscriminator(nn.Module):
         self.getIntermFeat = getIntermFeat
         self.n_layers = n_layers
 
-        kw = 4  # kernel size
+        kw = 4
         padw = int(np.ceil((kw - 1.0) / 2))
         sequence = [
             [
@@ -856,7 +738,7 @@ class NLayerDiscriminator(nn.Module):
                 res.append(model(res[-1]))
             return res[-1], res[1:]
         else:
-            return self.model(input), _
+            return self.model(input), None
 
 
 class NLayerDiscriminator3D(nn.Module):
@@ -926,4 +808,4 @@ class NLayerDiscriminator3D(nn.Module):
                 res.append(model(res[-1]))
             return res[-1], res[1:]
         else:
-            return self.model(input), _
+            return self.model(input), None

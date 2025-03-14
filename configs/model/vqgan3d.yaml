@@ -1,4 +1,4 @@
-_target_: src.models.VQGAN3D
+_target_: src.models.vq_gan_3d.VQGAN3D
 
 embedding_dim: 64 # Needs to be the same as n_hiddens * 2**(downsample-1)
 n_codes: 2048

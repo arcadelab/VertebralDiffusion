@@ -12,9 +12,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from vq_gan_3d.utils import shift_dim, adopt_weight, comp_getattr
-from vq_gan_3d.lpips import LPIPS
-from vq_gan_3d.codebook import Codebook
+from .utils import shift_dim, adopt_weight, comp_getattr
+from .lpips import LPIPS
+from .codebook import Codebook
 
 
 def silu(x):

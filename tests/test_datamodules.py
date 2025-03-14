@@ -14,7 +14,7 @@ def test_mnist_datamodule(batch_size: int) -> None:
 
     :param batch_size: Batch size of the data to be loaded by the dataloader.
     """
-    data_dir = "/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data/case_100012/torso/"
+    data_dir = "/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data/case-123569/TORSO"
 
     dm = NiftiDataModule(data_dir=data_dir, batch_size=batch_size)
     dm.prepare_data()
