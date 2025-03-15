@@ -9,7 +9,7 @@ from src.utils import pylogger
 log = pylogger.get_pylogger(__name__)
 
 @pytest.mark.parametrize("batch_size", [32, 128])
-def test_mnist_datamodule(batch_size: int) -> None:
+def test_vertebrae_datamodule(batch_size: int) -> None:
     """Tests `MNISTDataModule` to verify that it can be downloaded correctly, that the necessary
     attributes were created (e.g., the dataloader objects), and that dtypes and batch sizes
     correctly match.
@@ -35,7 +35,8 @@ def test_mnist_datamodule(batch_size: int) -> None:
 
     batch = next(iter(dm.train_dataloader()))
     x = batch
-    log.info(x)
+    #log.error('test error')
+    log.debug(x)
     log.info(x.shape)
     assert len(x) == batch_size
     #assert len(y) == batch_size

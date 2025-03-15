@@ -25,7 +25,9 @@ from .text import tokenize, bert_embed, BERT_MODEL_DIM
 from torch.utils.data import Dataset, DataLoader
 
 import matplotlib.pyplot as plt
+from src.utils.pylogger import get_pylogger
 
+log = get_pylogger(__name__)
 # helpers functions
 
 
@@ -841,7 +843,7 @@ class GaussianDiffusion(nn.Module):
         #             (self.vqgan.codebook.embeddings.max() -
         #              self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
         #else:
-            
+        #log.error(x.shape)
         x = normalize_img(x)
 
         b, device, img_size, = x.shape[0], x.device, self.image_size

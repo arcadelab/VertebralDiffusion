@@ -8,7 +8,9 @@ import nibabel as nib
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from lightning import LightningDataModule
+from src.utils.pylogger import get_pylogger
 
+log = get_pylogger(__name__)
 
 class NiftiDataset(Dataset):
     """A simple Dataset for loading NIfTI images from a directory."""
@@ -64,7 +66,6 @@ class NiftiDataset(Dataset):
 
     def __getitem__(self, index: int) -> torch.Tensor:
         file_path = self.nifti_files[index]
-        print(file_path)
         # Load the image using nibabel
         img_nib = nib.load(file_path)
         img = img_nib.get_fdata()
@@ -86,6 +87,10 @@ class NiftiDataset(Dataset):
         #augmented_path = file_path.replace('.nii', '_augmented.nii')
         #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
         #nib.save(augmented_img_nib, augmented_path)
+
+        #training pipeline expects a 4d tensor so don't need to squeeze it 
+        #img = img.squeeze(0)
+        #log.error(img.shape)
         return img
 
 
@@ -128,9 +133,12 @@ class NiftiDataModule(LightningDataModule):
         # Shuffle the file list to ensure randomness.
         random.shuffle(nifti_files)
         n = len(nifti_files)
-        train_count = int(0.8 * n)
+        train_count = int(0.2 * n)
         val_count = int(0.1 * n)
-        print(train_count, val_count)
+        log.error(train_count)
+        #log.debug(val_count)
+        #log.error(val_count)
+        #log.error(train_count)
         # The test set will be the remainder.
         
         if stage is None or stage == "fit":

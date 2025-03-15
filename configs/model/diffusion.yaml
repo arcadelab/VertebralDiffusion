@@ -15,18 +15,18 @@ max_grad_norm: null               # Maximum gradient norm for clipping (set to n
 
 unet3d:
   _target_: src.models.ddpm.Unet3D
-  dim: 64            # Spatial resolution, must match diffusion.image_size
+  dim: 128            # Spatial resolution, must match diffusion.image_size
   dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
-  channels: 8         # Number of channels (e.g. 3 for RGB)
+  channels: 1         # Number of channels (idk why we have 8 but ask later)
 
 diffusion:
   _target_: src.models.ddpm.GaussianDiffusion
   denoise_fn: src.models.ddpm.Unet3D
-  image_size: 64                    # Must match unet3d.diffusion_img_size
-  num_frames: 16                    # Temporal depth (number of frames) for each sample
+  image_size: 128                    # Must match unet3d.diffusion_img_size
+  num_frames: 128                    # Temporal depth (number of frames) for each sample
   timesteps: 300                   # Total number of diffusion steps
   loss_type: "l2"                   # Type of loss ("l1" or "l2")
-  channels: 8
+  channels: 1
   vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
 
 

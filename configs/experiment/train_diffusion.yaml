@@ -22,7 +22,7 @@ trainer:
   #gradient_clip_val: 0.5
 
 data:
-  batch_size: 12
+  batch_size: 1 # 12 orig
 
 logger:
   wandb:
