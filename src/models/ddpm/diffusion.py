@@ -21,9 +21,8 @@ from einops_exts import check_shape, rearrange_many
 
 from rotary_embedding_torch import RotaryEmbedding
 
-from ddpm.text import tokenize, bert_embed, BERT_MODEL_DIM
+from .text import tokenize, bert_embed, BERT_MODEL_DIM
 from torch.utils.data import Dataset, DataLoader
-from vq_gan_3d.model.vqgan import VQGAN
 
 import matplotlib.pyplot as plt
 
@@ -622,12 +621,13 @@ class GaussianDiffusion(nn.Module):
         self.image_size = image_size
         self.num_frames = num_frames
         self.denoise_fn = denoise_fn
-
-        if vqgan_ckpt:
-            self.vqgan = VQGAN.load_from_checkpoint(vqgan_ckpt).cuda()
-            self.vqgan.eval()
-        else:
-            self.vqgan = None
+        
+        #we're not training a vq-gan for now
+        #if vqgan_ckpt:
+        #    self.vqgan = VQGAN.load_from_checkpoint(vqgan_ckpt).cuda()
+        #    self.vqgan.eval()
+        #else:
+        self.vqgan = None
 
         betas = cosine_beta_schedule(timesteps)
 
@@ -771,14 +771,14 @@ class GaussianDiffusion(nn.Module):
         _sample = self.p_sample_loop(
             (batch_size, channels, num_frames, image_size, image_size), cond=cond, cond_scale=cond_scale)
 
-        if isinstance(self.vqgan, VQGAN):
-            # denormalize TODO: Remove eventually
-            _sample = (((_sample + 1.0) / 2.0) * (self.vqgan.codebook.embeddings.max() -
-                                                  self.vqgan.codebook.embeddings.min())) + self.vqgan.codebook.embeddings.min()
-
-            _sample = self.vqgan.decode(_sample, quantize=True)
-        else:
-            unnormalize_img(_sample)
+        #if isinstance(self.vqgan, VQGAN):
+        #    # denormalize TODO: Remove eventually
+        #    _sample = (((_sample + 1.0) / 2.0) * (self.vqgan.codebook.embeddings.max() -
+        #                                          self.vqgan.codebook.embeddings.min())) + self.vqgan.codebook.embeddings.min()#
+#
+ #           _sample = self.vqgan.decode(_sample, quantize=True)
+  #      else:
+        unnormalize_img(_sample)
 
         return _sample
 
@@ -832,17 +832,17 @@ class GaussianDiffusion(nn.Module):
         return loss
 
     def forward(self, x, *args, **kwargs):
-        if isinstance(self.vqgan, VQGAN):
-            with torch.no_grad():
-                x = self.vqgan.encode(
-                    x, quantize=False, include_embeddings=True)
-                # normalize to -1 and 1
-                x = ((x - self.vqgan.codebook.embeddings.min()) /
-                     (self.vqgan.codebook.embeddings.max() -
-                      self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
-        else:
-            print("Hi")
-            x = normalize_img(x)
+        #if isinstance(self.vqgan, VQGAN):
+        #    with torch.no_grad():
+        #        x = self.vqgan.encode(
+        #            x, quantize=False, include_embeddings=True)
+        #        # normalize to -1 and 1
+        #        x = ((x - self.vqgan.codebook.embeddings.min()) /
+        #             (self.vqgan.codebook.embeddings.max() -
+        #              self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
+        #else:
+            
+        x = normalize_img(x)
 
         b, device, img_size, = x.shape[0], x.device, self.image_size
         check_shape(x, 'b c f h w', c=self.channels,

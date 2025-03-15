@@ -5,6 +5,8 @@ import torch
 
 from src.data.mnist_datamodule import MNISTDataModule
 from src.data.vertebra_datamodule import NiftiDataModule
+from src.utils import pylogger
+log = pylogger.get_pylogger(__name__)
 
 @pytest.mark.parametrize("batch_size", [32, 128])
 def test_mnist_datamodule(batch_size: int) -> None:
@@ -14,7 +16,7 @@ def test_mnist_datamodule(batch_size: int) -> None:
 
     :param batch_size: Batch size of the data to be loaded by the dataloader.
     """
-    data_dir = "/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data/case-123569/TORSO"
+    data_dir = "/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data/"
 
     dm = NiftiDataModule(data_dir=data_dir, batch_size=batch_size)
     dm.prepare_data()
@@ -33,10 +35,9 @@ def test_mnist_datamodule(batch_size: int) -> None:
 
     batch = next(iter(dm.train_dataloader()))
     x = batch
-    print(x)
-    print(x.shape)
-    #TODO RIDA + ERIC need to finish their data preprocessing here
-    #assert len(x) == batch_size
+    log.info(x)
+    log.info(x.shape)
+    assert len(x) == batch_size
     #assert len(y) == batch_size
-    #assert x.dtype == torch.float32
+    assert x.dtype == torch.float32
     #assert y.dtype == torch.int64

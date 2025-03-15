@@ -5,7 +5,7 @@ from omegaconf import OmegaConf
 
 from src.utils import pylogger
 
-log = pylogger.RankedLogger(__name__, rank_zero_only=True)
+log = pylogger.get_pylogger(__name__)
 
 
 @rank_zero_only

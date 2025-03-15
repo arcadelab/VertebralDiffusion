@@ -1,24 +1,40 @@
-_target_: src.models.ddpm.Unet3D
+_target_: src.models.DiffusionModule
+
+ema_decay: 0.995                  # EMA decay factor
+#train_lr: 1e-4                    # Learning rate for training
+#train_num_steps: 100000           # Total number of training steps
+gradient_accumulate_every: 1      # Number of steps to accumulate gradients before an optimizer update
+amp: false                        # Use mixed precision training (true/false)
+step_start_ema: 2000              # Start EMA updates after this many steps
+update_ema_every: 10              # Frequency (in steps) to update the EMA model
+save_and_sample_every: 1000       # Frequency (in steps) to save checkpoints and generate samples
+results_folder: ${paths.root_dir}/results       # Folder to save checkpoints and sample outputs
+num_sample_rows: 1                # Number of rows in the grid when visualizing samples
+max_grad_norm: null               # Maximum gradient norm for clipping (set to null if not used)
+     
+
+unet3d:
+  _target_: src.models.ddpm.Unet3D
+  dim: 64            # Spatial resolution, must match diffusion.image_size
+  dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
+  channels: 8         # Number of channels (e.g. 3 for RGB)
 
 diffusion:
-  timesteps: 1000              
-  loss_type: "l1"              
-  use_dynamic_thres: false    
-  dynamic_thres_percentile: 0.9  
-  image_size: 64               
-  num_frames: 16               
-  channels: 3                 
-  text_use_bert_cls: false     
-  vqgan_ckpt: null             
+  _target_: src.models.ddpm.GaussianDiffusion
+  denoise_fn: src.models.ddpm.Unet3D
+  image_size: 64                    # Must match unet3d.diffusion_img_size
+  num_frames: 16                    # Temporal depth (number of frames) for each sample
+  timesteps: 300                   # Total number of diffusion steps
+  loss_type: "l2"                   # Type of loss ("l1" or "l2")
+  channels: 8
+  vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
 
-model:
-  embedding_dim: 64           
-  n_hiddens: 32                
-  downsample: [2, 2, 2]        
-  image_channels: 3           
-  norm_type: group            
-  padding_type: replicate      
-  num_groups: 32               
 
 optimizer:
-  lr: 3e-4                     
+  _target_: torch.optim.AdamW
+  _partial_: true
+  lr: 1e-4
+  eps: 1e-08
+  betas: [0.9, 0.999]
+  weight_decay: 0.01
+                 

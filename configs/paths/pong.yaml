@@ -1,10 +1,10 @@
 # path to root directory
 # this requires PROJECT_ROOT environment variable to exist
 # you can replace it with "." if you want the root to be the current working directory
-root_dir: /mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data
+root_dir: /mnt/oracle_data/sampath/DiffusionVertebrae
 
 # path to data directory
-data_dir: /mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data/case-123569/TORSO
+data_dir: /mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data
 
 # path to logging directory
 log_dir: ${paths.root_dir}/logs/

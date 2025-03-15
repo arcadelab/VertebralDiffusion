@@ -79,13 +79,13 @@ class NiftiDataset(Dataset):
         img = pad_transform(img) #resize(img)#pad_transform(img)
         #print(img.shape)
 
-        augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
-        augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
+        #augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
+        #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
 
         # Define save path
         #augmented_path = file_path.replace('.nii', '_augmented.nii')
-        augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
-        nib.save(augmented_img_nib, augmented_path)
+        #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
+        #nib.save(augmented_img_nib, augmented_path)
         return img
 
 
@@ -130,6 +130,7 @@ class NiftiDataModule(LightningDataModule):
         n = len(nifti_files)
         train_count = int(0.8 * n)
         val_count = int(0.1 * n)
+        print(train_count, val_count)
         # The test set will be the remainder.
         
         if stage is None or stage == "fit":
