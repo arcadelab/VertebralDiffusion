@@ -17,7 +17,7 @@ def test_train_fast_dev_run(cfg_train: DictConfig) -> None:
     HydraConfig().set_config(cfg_train)
     with open_dict(cfg_train):
         cfg_train.trainer.fast_dev_run = True
-        cfg_train.trainer.accelerator = "cpu"
+        cfg_train.trainer.accelerator = "gpu"
     train(cfg_train)
 
 
