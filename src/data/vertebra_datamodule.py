@@ -135,7 +135,7 @@ class NiftiDataModule(LightningDataModule):
         n = len(nifti_files)
         train_count = int(0.2 * n)
         val_count = int(0.1 * n)
-        log.error(train_count)
+        #log.error(train_count)
         #log.debug(val_count)
         #log.error(val_count)
         #log.error(train_count)
