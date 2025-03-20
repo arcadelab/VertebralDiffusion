@@ -8,8 +8,8 @@ defaults:
   - model: diffusion #vqgan3d
   - callbacks: default
   - logger: null # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
-  - trainer: default
-  - paths: alderaan
+  - trainer: gpu
+  - paths: tetris
   - extras: default
   - hydra: default
 

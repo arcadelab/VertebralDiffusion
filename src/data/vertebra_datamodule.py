@@ -4,11 +4,20 @@ from glob import glob
 from pathlib import Path 
 import random
 import torchio as tio
+from torchio import SubjectsDataset, SubjectsLoader
 import nibabel as nib
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from lightning import LightningDataModule
 from src.utils.pylogger import get_pylogger
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message="Using TorchIO images without a torchio.SubjectsLoader in PyTorch >= 2.3 might have unexpected consequences, e.g., the collated batches will be instances of torchio.Subject with 5D images.",
+    category=UserWarning,
+    module="torchio.data.image"
+)
+
 
 log = get_pylogger(__name__)
 
@@ -55,12 +64,16 @@ class NiftiDataset(Dataset):
             translation=0,
         )
         ])
-        size_transform = tio.Resize((128, 128, 128))
+        #size_transform = tio.Resize((128, 128, 128))
+        size_transform = tio.Resize((32,32, 32))# to many OOM so shrink
+        #pad_transform = tio.CropOrPad(
+        #    target_shape = (128, 128, 128),
+        #    padding_mode='constant'
+        #) # constant_values =-1024
         pad_transform = tio.CropOrPad(
-            target_shape = (128, 128, 128),
+            target_shape = (32, 32, 32),
             padding_mode='constant'
-        ) # constant_values =-1024
-
+        )
         return train_transform, size_transform, pad_transform
     
 
@@ -73,7 +86,7 @@ class NiftiDataset(Dataset):
 
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
-        img = torch.tensor(img, dtype=torch.float32).unsqueeze(0)
+        img = img.clone().detach().to(torch.float32).unsqueeze(0)
         if self.train:
             img = train_aug(img)
         #img = resize(img)
@@ -133,7 +146,7 @@ class NiftiDataModule(LightningDataModule):
         # Shuffle the file list to ensure randomness.
         random.shuffle(nifti_files)
         n = len(nifti_files)
-        train_count = int(0.2 * n)
+        train_count = int(0.9 * n)
         val_count = int(0.1 * n)
         #log.error(train_count)
         #log.debug(val_count)

@@ -4,9 +4,24 @@ import torch.nn.functional as F
 import pytorch_lightning as pl
 from .ddpm import Unet3D, GaussianDiffusion
 from .ddpm import *
+import numpy as np
 from lightning import LightningModule
+from src.utils.pylogger import get_pylogger
+import nibabel as nib 
+
+log = get_pylogger(__name__)
+
 
 #helper class for the diff model 
+def save_volume(volume, path, milestone):
+    affine = np.eye(4)
+    # Create a NIfTI image and save it
+    nifti_img = nib.Nifti1Image(volume, affine)
+    output_folder = self.results_folder / 'volumes'
+    output_folder.mkdir(exist_ok=True, parents=True)
+    volume_path = str(output_folder / f'{milestone}.nii')
+    nib.save(nifti_img, volume_path)
+
 class EMA():
     def __init__(self, beta):
         super().__init__()
@@ -51,6 +66,7 @@ class DiffusionModule(LightningModule):
         results_folder: str,
         amp: bool,
         optimizer: list[torch.optim.Optimizer],
+        batch_size: int,
     ):
         """
         Args:
@@ -84,6 +100,7 @@ class DiffusionModule(LightningModule):
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(exist_ok=True, parents=True)
         self.amp = amp
+        self.batch_size = batch_size
 
         # Setup AMP scaler.
         self.scaler = GradScaler(enabled=self.amp)
@@ -141,7 +158,7 @@ class DiffusionModule(LightningModule):
             opt.zero_grad()
 
         self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)
-
+        #log.info(f"Step {self.global_step}: loss = {loss.item()}") this actually increments good 
         # EMA update after step_start_ema and every update_ema_every steps.
         if self.global_step >= self.step_start_ema and (self.global_step % self.update_ema_every == 0):
             self.ema.update_model_average(self.ema_model, self.diffusion)
