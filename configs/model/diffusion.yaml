@@ -7,25 +7,26 @@ gradient_accumulate_every: 1      # Number of steps to accumulate gradients befo
 amp: false                        # Use mixed precision training (true/false)
 step_start_ema: 2000              # Start EMA updates after this many steps
 update_ema_every: 10              # Frequency (in steps) to update the EMA model
-save_and_sample_every: 5       # Frequency (in steps) to save checkpoints and generate samples
+save_and_sample_every:  2000       # Frequency (in steps) to save checkpoints and generate samples
 results_folder: ${paths.root_dir}/results       # Folder to save checkpoints and sample outputs
 num_sample_rows: 1                # Number of rows in the grid when visualizing samples
 max_grad_norm: null               # Maximum gradient norm for clipping (set to null if not used)
 batch_size: ${data.batch_size}                    # Batch size for training
+
 unet3d:
   _target_: src.models.ddpm.Unet3D
-  dim: 32            # Spatial resolution, must match diffusion.image_size
+  dim: ${data.dim}           # Spatial resolution, must match diffusion.image_size
   dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
   channels: 1         # Number of channels (idk why we have 8 but ask later)
 
 diffusion:
   _target_: src.models.ddpm.GaussianDiffusion
   denoise_fn: src.models.ddpm.Unet3D
-  image_size: 32                    # Must match unet3d.diffusion_img_size
-  num_frames: 32                    # Temporal depth (number of frames) for each sample
+  image_size: ${data.dim}                       # Must match unet3d.diffusion_img_size
+  num_frames: ${data.dim}                       # Temporal depth (number of frames) for each sample
   timesteps: 300                   # Total number of diffusion steps
   loss_type: "l2"                   # Type of loss ("l1" or "l2")
-  channels: 1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variaton thereof)
+  channels: 1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
   vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
 
 

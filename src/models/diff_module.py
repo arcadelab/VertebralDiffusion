@@ -12,15 +12,38 @@ import nibabel as nib
 log = get_pylogger(__name__)
 
 
-#helper class for the diff model 
-def save_volume(volume, path, milestone):
+# Function to convert a tensor to a GIF and save it.
+def volume_tensor_to_nifti(tensor, path):
+    """
+    Save a 3D volume tensor to a NIfTI file.
+    
+    Args:
+        tensor (torch.Tensor): A tensor of shape (channels, depth, height, width). 
+                               If channels == 1, it will be squeezed.
+        path (str): File path to save the NIfTI file, e.g. 'output_volume.nii'
+    """
+    # Normalize the tensor to [0, 1] range.
+    tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
+    
+    # If there's a single channel, remove that dimension.
+    if tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    if tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    
+    # Convert the tensor to a NumPy array. If needed, move to CPU.
+    np_volume = tensor.cpu().numpy()
+    log.error(np_volume.shape)
+    
+    # Create an identity affine. You can change this if you have spatial metadata.
     affine = np.eye(4)
-    # Create a NIfTI image and save it
-    nifti_img = nib.Nifti1Image(volume, affine)
-    output_folder = self.results_folder / 'volumes'
-    output_folder.mkdir(exist_ok=True, parents=True)
-    volume_path = str(output_folder / f'{milestone}.nii')
-    nib.save(nifti_img, volume_path)
+    
+    # Create a NIfTI image and save it.
+    nifti_img = nib.Nifti1Image(np_volume, affine)
+    nib.save(nifti_img, path)
+    print(f"Saved volume to {path}")
+
+#helper class for the diff model 
 
 class EMA():
     def __init__(self, beta):
@@ -173,13 +196,23 @@ class DiffusionModule(LightningModule):
                 # Sample using the EMA model (assumes self.diffusion.sample exists).
                 all_videos_list = list(map(lambda n: self.ema_model.sample(batch_size=n), batches))
                 all_videos_list = torch.cat(all_videos_list, dim=0)
+                log.info(all_videos_list.shape)
+
             # Optionally pad and rearrange the samples for visualization.
-            all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
-            one_gif = rearrange(all_videos_list, '(i j) c f h w -> c f (i h) (j w)', i=self.num_sample_rows)
-            video_folder = self.results_folder / 'gifs'
-            video_folder.mkdir(exist_ok=True, parents=True)
-            video_path = str(video_folder / f'{milestone}.gif')
-            video_tensor_to_gif(one_gif, video_path)
+            #all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
+            #padded_volume = F.pad(all_videos_list, (2, 2, 2, 2))
+            #one_gif = rearrange(all_videos_list, '(i j) c f h w -> c f (i h) (j w)', i=self.num_sample_rows)
+            #video_folder = self.results_folder / 'gifs'
+            #video_folder.mkdir(exist_ok=True, parents=True)
+            #video_path = str(video_folder / f'{milestone}.gif')
+            
+            volume_folder = self.results_folder / 'volumes'
+            volume_folder.mkdir(exist_ok=True, parents=True)
+            volume_path = str(volume_folder / f'{milestone}.nii')
+
+            # Save the volume using the custom function.
+            volume_tensor_to_nifti(all_videos_list, volume_path)
+            #video_tensor_to_gif(one_gif, video_path)
             # Save a checkpoint.
             ckpt_folder = self.results_folder / 'checkpoints'
             ckpt_folder.mkdir(exist_ok=True, parents=True)

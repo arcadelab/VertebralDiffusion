@@ -1,8 +1,9 @@
 _target_: src.data.NiftiDataModule
 data_dir: ${paths.data_dir}
-batch_size: 12
+batch_size: 1
 num_workers: 10
 pin_memory: False
+dim: 56
 #image_size: [128, 128, 128] #these are 3d volumes
 
 

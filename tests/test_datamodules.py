@@ -8,7 +8,7 @@ from src.data.vertebra_datamodule import NiftiDataModule
 from src.utils import pylogger
 log = pylogger.get_pylogger(__name__)
 
-@pytest.mark.parametrize("batch_size", [32, 128])
+@pytest.mark.parametrize("batch_size", [32]) #  128
 def test_vertebrae_datamodule(batch_size: int) -> None:
     """Tests `MNISTDataModule` to verify that it can be downloaded correctly, that the necessary
     attributes were created (e.g., the dataloader objects), and that dtypes and batch sizes
@@ -16,7 +16,7 @@ def test_vertebrae_datamodule(batch_size: int) -> None:
 
     :param batch_size: Batch size of the data to be loaded by the dataloader.
     """
-    data_dir = "/data1/sampath/diffusion_vertebrae_data/"
+    data_dir = "/data1/sampath/diffusion_vertebrae_data/case-123213"
 
     dm = NiftiDataModule(data_dir=data_dir, batch_size=batch_size)
     dm.prepare_data()

@@ -9,6 +9,7 @@ import nibabel as nib
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from lightning import LightningDataModule
+import numpy as np
 from src.utils.pylogger import get_pylogger
 import warnings
 warnings.filterwarnings(
@@ -23,12 +24,13 @@ log = get_pylogger(__name__)
 
 class NiftiDataset(Dataset):
     """A simple Dataset for loading NIfTI images from a directory."""
-    def __init__(self, data_files: list, train: bool = False) -> None:
+    def __init__(self, data_files: list, dim: int, train: bool = False) -> None:
         """
         Args:
             data_dir (str): Path to directory containing NIfTI files.
             transform (callable, optional): Optional transform to be applied on a sample.
         """
+        self.dim = dim
         self.train = train
         # Find files with .nii or .nii.gz extension.
         self.nifti_files = data_files
@@ -59,10 +61,12 @@ class NiftiDataset(Dataset):
         #    translation=0,           
         #    p=0.75                  
         #),
+        tio.Resample(target=(1, 1, 0.5)),
         tio.RandomMotion(
-            degrees = 10,
+            degrees = np.pi / 18,
             translation=0,
-        )
+        ),
+        
         ])
         #size_transform = tio.Resize((128, 128, 128))
         size_transform = tio.Resize((32,32, 32))# to many OOM so shrink
@@ -71,7 +75,7 @@ class NiftiDataset(Dataset):
         #    padding_mode='constant'
         #) # constant_values =-1024
         pad_transform = tio.CropOrPad(
-            target_shape = (32, 32, 32),
+            target_shape = (self.dim, self.dim, self.dim),
             padding_mode='constant'
         )
         return train_transform, size_transform, pad_transform
@@ -97,7 +101,6 @@ class NiftiDataset(Dataset):
         #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
 
         # Define save path
-        #augmented_path = file_path.replace('.nii', '_augmented.nii')
         #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
         #nib.save(augmented_img_nib, augmented_path)
 
@@ -114,10 +117,12 @@ class NiftiDataModule(LightningDataModule):
         data_dir: str = "data/nifti/",
         train_val_test_split: Tuple[int, int, int] = (70, 10, 20),
         batch_size: int = 4,
+        dim: int = 12, 
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> None:
         super().__init__()
+        self.dim = dim
         self.save_hyperparameters(logger=False)
         self.data_train = None
         self.data_val = None
@@ -157,12 +162,12 @@ class NiftiDataModule(LightningDataModule):
         if stage is None or stage == "fit":
             train_files = nifti_files[:train_count]
             val_files = nifti_files[train_count:train_count + val_count]
-            self.data_train = NiftiDataset(train_files, train=True)
-            self.data_val = NiftiDataset(val_files, train=False)
+            self.data_train = NiftiDataset(train_files, self.dim, train=True)
+            self.data_val = NiftiDataset(val_files, self.dim, train=False)
         
         if stage is None or stage == "test":
             test_files = nifti_files[train_count + val_count:]
-            self.data_test = NiftiDataset(test_files, train=False)
+            self.data_test = NiftiDataset(test_files, self.dim, train=False)
 
     def train_dataloader(self) -> DataLoader[Any]:
         return DataLoader(
