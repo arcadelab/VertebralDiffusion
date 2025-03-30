@@ -18,6 +18,14 @@ warnings.filterwarnings(
     category=UserWarning,
     module="torchio.data.image"
 )
+warnings.filterwarnings("ignore", message="Output shape")
+
+warnings.filterwarnings(
+    "ignore",
+    message="Using TorchIO images without a torchio.SubjectsLoader in PyTorch >= 2.3 might have unexpected consequences, e.g., the collated batches will be instances of torchio.Subject with 5D images.",
+    category=UserWarning,
+    module="torchio.data.image"
+)
 
 
 log = get_pylogger(__name__)
@@ -54,6 +62,8 @@ class NiftiDataset(Dataset):
      #       translation=0,
      #   )
     def data_aug(self):
+        #log.error(self.dim)
+        #assert self.dim == 56
         train_transform = tio.Compose([
         #tio.RandomAffine(
         #    scales=(0.9, 1.1),       
@@ -63,10 +73,25 @@ class NiftiDataset(Dataset):
         #),
         tio.Resample(target=(1, 1, 0.5)),
         tio.RandomMotion(
-            degrees = np.pi / 18,
+            degrees = np.pi,
             translation=0,
         ),
+        #tio.Resize((self.dim, self.dim, self.dim)),
+        tio.CropOrPad(
+            target_shape = (self.dim, self.dim, self.dim),
+            padding_mode=-1024
+            ),
+        tio.RescaleIntensity(),
+        ])
         
+        val_transform = tio.Compose([
+            tio.Resample(target=(1, 1, 0.5)),
+            tio.RescaleIntensity(),
+            #tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do this but wait unitl larger size
+            tio.CropOrPad(
+            target_shape = (self.dim, self.dim, self.dim),
+            padding_mode= -1024
+            )
         ])
         #size_transform = tio.Resize((128, 128, 128))
         size_transform = tio.Resize((32,32, 32))# to many OOM so shrink
@@ -78,7 +103,7 @@ class NiftiDataset(Dataset):
             target_shape = (self.dim, self.dim, self.dim),
             padding_mode='constant'
         )
-        return train_transform, size_transform, pad_transform
+        return train_transform, val_transform
     
 
     def __getitem__(self, index: int) -> torch.Tensor:
@@ -86,23 +111,26 @@ class NiftiDataset(Dataset):
         # Load the image using nibabel
         img_nib = nib.load(file_path)
         img = img_nib.get_fdata()
-        train_aug, resize, pad_transform = self.data_aug()
+        train_aug, val_aug = self.data_aug()
 
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
         img = img.clone().detach().to(torch.float32).unsqueeze(0)
         if self.train:
             img = train_aug(img)
+        else:
+            img = val_aug(img)
         #img = resize(img)
-        img = pad_transform(img) #resize(img)#pad_transform(img)
+        #img = pad_transform(img) #resize(img)#pad_transform(img)
         #print(img.shape)
 
-        #augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
-        #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
+        augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
+        augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
 
         # Define save path
-        #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
-        #nib.save(augmented_img_nib, augmented_path)
+        augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
+        log.error(augmented_path)
+        nib.save(augmented_img_nib, augmented_path)
 
         #training pipeline expects a 4d tensor so don't need to squeeze it 
         #img = img.squeeze(0)
@@ -117,7 +145,7 @@ class NiftiDataModule(LightningDataModule):
         data_dir: str = "data/nifti/",
         train_val_test_split: Tuple[int, int, int] = (70, 10, 20),
         batch_size: int = 4,
-        dim: int = 12, 
+        dim: int = 56, 
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> None:
