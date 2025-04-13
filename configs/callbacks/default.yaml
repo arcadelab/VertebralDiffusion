@@ -1,7 +1,7 @@
 defaults:
-  - model_checkpoint
-  - model_summary
-  - rich_progress_bar
+  - model_checkpoint.yaml
+  - model_summary.yaml
+  #- rich_progress_bar.yaml
   - _self_
 #- early_stopping no early stopping loss for now
 

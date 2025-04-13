@@ -5,7 +5,7 @@
 defaults:
   - _self_
   - data: vertebrae
-  - model: diffusion #vqgan3d
+  - model: vqgan3d #diffusion #vqgan3d
   - callbacks: default
   - logger: wandb # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
   - trainer: gpu
@@ -15,7 +15,7 @@ defaults:
 
   # experiment configs allow for version control of specific hyperparameters
   # e.g. best hyperparameters for given model and datamodule
-  - experiment: train_diffusion #train_vqgan
+  - experiment: train_vqgan #train_diffusion 
 
   # config for hyperparameter optimization
   - hparams_search: null

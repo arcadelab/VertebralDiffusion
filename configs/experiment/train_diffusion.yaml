@@ -24,6 +24,13 @@ trainer:
 data:
   batch_size: 1 # 12 orig
 
+
+
+callbacks:
+
+  model_checkpoint:
+    monitor: "train/loss"
+
 logger:
   wandb:
     tags: ${tags}

@@ -141,6 +141,8 @@ dmypy.json
 
 # Data & Models
 *.h5
+*.nii
+*.nii.gz
 *.tar
 *.tar.gz
 

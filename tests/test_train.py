@@ -18,6 +18,7 @@ def test_train_fast_dev_run(cfg_train: DictConfig) -> None:
     with open_dict(cfg_train):
         cfg_train.trainer.fast_dev_run = True
         cfg_train.trainer.accelerator = "cpu"
+        cfg_train.model.results_folder = 'tests/tmp'
     train(cfg_train)
 
 
@@ -31,6 +32,7 @@ def test_train_fast_dev_run_gpu(cfg_train: DictConfig) -> None:
     with open_dict(cfg_train):
         cfg_train.trainer.fast_dev_run = True
         cfg_train.trainer.accelerator = "gpu"
+        cfg_train.model.results_folder = 'tests/tmp'
     train(cfg_train)
 
 
@@ -46,6 +48,7 @@ def test_train_epoch_gpu_amp(cfg_train: DictConfig) -> None:
         cfg_train.trainer.max_epochs = 1
         cfg_train.trainer.accelerator = "gpu"
         cfg_train.trainer.precision = 16
+        cfg_train.model.results_folder = 'tests/tmp'
     train(cfg_train)
 
 
@@ -59,6 +62,7 @@ def test_train_epoch_double_val_loop(cfg_train: DictConfig) -> None:
     with open_dict(cfg_train):
         cfg_train.trainer.max_epochs = 1
         cfg_train.trainer.val_check_interval = 0.5
+        cfg_train.model.results_folder = 'tests/tmp'
     train(cfg_train)
 
 
@@ -74,6 +78,7 @@ def test_train_ddp_sim(cfg_train: DictConfig) -> None:
         cfg_train.trainer.accelerator = "cpu"
         cfg_train.trainer.devices = 2
         cfg_train.trainer.strategy = "ddp_spawn"
+        cfg_train.model.results_folder = 'tests/tmp'
     train(cfg_train)
 
 
@@ -89,7 +94,7 @@ def test_train_resume(tmp_path: Path, cfg_train: DictConfig) -> None:
 
     HydraConfig().set_config(cfg_train)
     metric_dict_1, _ = train(cfg_train)
-
+    cfg_train.model.results_folder = 'tests/tmp'
     files = os.listdir(tmp_path / "checkpoints")
     assert "last.ckpt" in files
     assert "epoch_000.ckpt" in files

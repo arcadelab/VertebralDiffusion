@@ -75,24 +75,25 @@ class NiftiDataset(Dataset):
         #    p=0.75                  
         #),
         rotation,
-        tio.Resample(target=(1, 1, 0.5)),
+        tio.Resample(target=(1, 1, 1)), # don't use 0.5
         tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu
         #tio.CropOrPad(
         #    target_shape = (self.dim, self.dim, self.dim),
         #    padding_mode=-1024
         #    ),
-        #tio.RescaleIntensity(),
+        tio.RescaleIntensity(out_min_max = (-1, 1)),
         ])
         
         val_transform = tio.Compose([
             #tio.Resample(target=(1, 1, 0.5)),
             rotation,
-           tio.Resample(target=(1, 1, 0.5)),
-            tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu 
+           tio.Resample(target=(1, 1, 1)),
+           tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu 
             #tio.CropOrPad(
             #target_shape = (self.dim, self.dim, self.dim),
             #padding_mode= -1024
             #)
+            tio.RescaleIntensity(out_min_max = (-1, 1)),
         ])
         return train_transform, val_transform
     
@@ -102,8 +103,7 @@ class NiftiDataset(Dataset):
         # Load the image using nibabel
         img_nib = nib.load(file_path)
         img = img_nib.get_fdata()
-        train_aug, val_aug = self.data_aug()
-        #log.error(train_aug)
+        train_aug, val_aug = self.data_aug() # reinstantiates the rotation every single time get item is called 
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
         img = img.clone().detach().to(torch.float32).unsqueeze(0)

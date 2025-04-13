@@ -12,11 +12,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
-
+import numpy as np
+import nibabel as nib
 from .utils import shift_dim, adopt_weight, comp_getattr
 from .lpips import LPIPS
 from .codebook import Codebook
-
 
 def silu(x):
     return x * torch.sigmoid(x)
@@ -406,7 +406,7 @@ class VQGAN3D(LightningModule):
 
     def validation_step(self, batch, batch_idx):
         x = batch["data"]  # TODO: batch['stft']
-        recon_loss, _, vq_output, perceptual_loss = self.forward(x)
+        recon_loss, x_recon, vq_output, perceptual_loss = self.forward(x)
         self.log("val/recon_loss", recon_loss, prog_bar=True)
         self.log("val/perceptual_loss", perceptual_loss, prog_bar=True)
         self.log("val/perplexity", vq_output["perplexity"], prog_bar=True)

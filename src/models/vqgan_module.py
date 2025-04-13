@@ -1,190 +1,1104 @@
-from typing import Any, Optional
+"""Adapted from https://github.com/SongweiGe/TATS"""
+# Copyright (c) Meta Platforms, Inc. All Rights Reserved
 
-import torch
-import torch.nn.functional as F
-from lightning import LightningModule
-from PIL import Image
+import math
+import argparse
 import numpy as np
+import pickle as pkl
 
-from .vq_gan_3d import VQGAN3D, Discriminator, weights_init, LPIPS
-from ..utils import pylogger
-from .losses import DiceLoss2D
+import pytorch_lightning as pl
+from lightning import LightningModule
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.distributed as dist
+import numpy as np
+import nibabel as nib
+from .vq_gan_3d.utils import shift_dim, adopt_weight, comp_getattr
+from ..utils import get_pylogger
+from .vq_gan_3d.lpips import LPIPS
+from .vq_gan_3d.codebook import Codebook
 
-log = pylogger.get_pylogger(__name__)
+log = get_pylogger(__name__)
 
-
-class VQGANModule(LightningModule):
-    """LighnintModule for training a VQGAN.
-
-    A LightningModule organizes your PyTorch code into 6 sections:
-        - Initialization (__init__)
-        - Train Loop (training_step)
-        - Validation loop (validation_step)
-        - Test loop (test_step)
-        - Prediction Loop (predict_step)
-        - Optimizers and LR Schedulers (configure_optimizers)
-
-    Docs:
-        https://lightning.ai/docs/pytorch/latest/common/lightning_module.html
+def volume_tensor_to_nifti(tensor, path):
     """
+    Save a 3D volume tensor to a NIfTI file.
+    
+    Args:
+        tensor (torch.Tensor): A tensor of shape (channels, depth, height, width). 
+                               If channels == 1, it will be squeezed.
+        path (str): File path to save the NIfTI file, e.g. 'output_volume.nii'
+    """
+    # Normalize the tensor to [0, 1] range.
+    #tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
+    
+    # If there's a single channel, remove that dimension.
+    if tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    if tensor.shape[0] == 1:
+        tensor = tensor.squeeze(0)
+    
+    # Convert the tensor to a NumPy array. If needed, move to CPU.
+    np_volume = tensor.cpu().numpy()
+    log.error(np_volume.shape)
+    
+    # Create an identity affine. You can change this if you have spatial metadata.
+    affine = np.eye(4)
+    
+    # Create a NIfTI image and save it.
+    nifti_img = nib.Nifti1Image(np_volume, affine)
+    nib.save(nifti_img, path)
+    print(f"Saved volume to {path}")
 
+
+def silu(x):
+    return x * torch.sigmoid(x)
+
+
+class SiLU(nn.Module):
+    """Applies the Sigmoid Linear Unit (SiLU) function element-wise"""
+
+    def __init__(self):
+        super(SiLU, self).__init__()
+
+    def forward(self, x):
+        return silu(x)
+
+
+def hinge_d_loss(logits_real, logits_fake):
+    """Hinge loss for discriminator"""
+    loss_real = torch.mean(F.relu(1.0 - logits_real))
+    loss_fake = torch.mean(F.relu(1.0 + logits_fake))
+    d_loss = 0.5 * (loss_real + loss_fake)
+    return d_loss
+
+
+def vanilla_d_loss(logits_real, logits_fake):
+    """Vanilla loss for discriminator."""
+    d_loss = 0.5 * (
+        torch.mean(torch.nn.functional.softplus(-logits_real))
+        + torch.mean(torch.nn.functional.softplus(logits_fake))
+    )
+    return d_loss
+
+
+class VQGAN3D(LightningModule):
     def __init__(
         self,
-        vqgan: VQGAN3D,
-        discriminator: Discriminator,
-        optimizers: list[torch.optim.Optimizer],
-        schedulers: Optional[list[torch.optim.lr_scheduler.LRScheduler]] = None,
-        disc_factor: float = 1.0,
-        disc_start: int = 50_000,
-        rec_loss_factor: float = 1.0,
-        perceptual_loss_factor: float = 1.0,
-        segmentation_loss_factor: float = 1.0,
+        results_folder: str = "results",
+        log_every: int = 1,
+        n_codes: int = 2048,
+        embedding_dim: int = 64,
+        lr: float = 3e-4,
+        n_hiddens: int = 32,
+        downsample: list[int] = [2, 2, 2],
+        image_channels: int = 3,
+        norm_type: str = "group",
+        padding_type: str = "replicate",
+        num_groups: int = 32,
+        disc_channels: int = 64,
+        disc_layers: int = 3,
+        discriminator_iter_start: int = 50000,
+        disc_loss_type: str = "hinge",
+        image_gan_weight: float = 1.0,
+        video_gan_weight: float = 1.0,
+        l1_weight: float = 4.0,
+        gan_feat_weight: float = 1.0,
+        perceptual_weight: float = 1.0,
+        # i3d_feat: bool = False,
+        restart_thres: float = 0.0,
+        no_random_restart: bool = False,
     ):
-        """
-        Args:
-            vqgan: VQGAN model
-            discriminator: Discriminator model
-            optimizers: The VQ optimizer and the discriminator optimizer, partially initialized
-            schedulers: list of schedulers for each optimizer, or None.
-            disc_factor: The discriminator loss factor.
-            disc_start: The number of steps to wait before starting to train the discriminator.
-        """
         super().__init__()
-
-        # this line allows to access init params with 'self.hparams' attribute
-        # also ensures init params will be stored in ckpt
-        self.save_hyperparameters(logger=False)
-
-        self.vqgan = vqgan
-        self.discriminator = discriminator
-        self.discriminator.apply(weights_init)
-        self.perceptual_loss = LPIPS().eval()
-        self.dice_loss = DiceLoss2D(skip_bg=False)
-        self.opt_vq, self.opt_disc = self.configure_optimizers()
-
-        # manual optimization
+        self.results_folder = results_folder
+        self.log_every = log_every
+        self.lr = lr
+        self.discriminator_iter_start = discriminator_iter_start
+        #do manual optimization bc of multiple optimizers
         self.automatic_optimization = False
+        self.encoder = Encoder(
+            n_hiddens,
+            downsample,
+            image_channels,
+            norm_type,
+            padding_type,
+            num_groups,
+        )
+        self.decoder = Decoder(
+            n_hiddens,
+            downsample,
+            image_channels,
+            norm_type,
+            num_groups,
+        )
+        self.enc_out_ch = self.encoder.out_channels
+        self.pre_vq_conv = SamePadConv3d(
+            self.enc_out_ch,
+            embedding_dim,
+            1,
+            padding_type=padding_type,
+        )
+        self.post_vq_conv = SamePadConv3d(embedding_dim, self.enc_out_ch, 1)
+
+        self.codebook = Codebook(
+            n_codes,
+            embedding_dim,
+            no_random_restart=no_random_restart,
+            restart_thres=restart_thres,
+        )
+
+        self.gan_feat_weight = gan_feat_weight
+        # TODO: Changed batchnorm from sync to normal
+        self.image_discriminator = NLayerDiscriminator(
+            image_channels,
+            disc_channels,
+            disc_layers,
+            norm_layer=nn.BatchNorm2d,
+        )
+        self.video_discriminator = NLayerDiscriminator3D(
+            image_channels,
+            disc_channels,
+            disc_layers,
+            norm_layer=nn.BatchNorm3d,
+        )
+
+        if disc_loss_type == "vanilla":
+            self.disc_loss = vanilla_d_loss
+        elif disc_loss_type == "hinge":
+            self.disc_loss = hinge_d_loss
+        else:
+            raise NotImplementedError(
+                f"Discriminator loss type {disc_loss_type} not implemented"
+            )
+
+        self.perceptual_model = LPIPS().eval()
+
+        self.image_gan_weight = image_gan_weight
+        self.video_gan_weight = video_gan_weight
+
+        self.perceptual_weight = perceptual_weight
+
+        self.l1_weight = l1_weight
+        self.save_hyperparameters()
+
+    def encode(self, x, include_embeddings=False, quantize=True):
+        h = self.pre_vq_conv(self.encoder(x))
+        if quantize:
+            vq_output = self.codebook(h)
+            if include_embeddings:
+                return vq_output["embeddings"], vq_output["encodings"]
+            else:
+                return vq_output["encodings"]
+        return h
+
+    def decode(self, latent, quantize=False):
+        if quantize:
+            vq_output = self.codebook(latent)
+            latent = vq_output["encodings"]
+        h = F.embedding(latent, self.codebook.embeddings)
+        h = self.post_vq_conv(shift_dim(h, -1, 1))
+        return self.decoder(h)
+    
+
+    #was optimizer idx 0
+    def forward_ae(self, x, log_image=False):
+        B, C, T, H, W = x.shape
+        # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
+        z = self.pre_vq_conv(self.encoder(x))
+        vq_output = self.codebook(z)
+        x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
+
+        # Selects one random 2D image from each 3D Image
+        frame_idx = torch.randint(0, T, [B]).cuda()
+        frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
+        frames = torch.gather(x, 2, frame_idx_selected).squeeze(2)
+        frames_recon = torch.gather(x_recon, 2, frame_idx_selected).squeeze(2)
+
+        if log_image:
+            return frames, frames_recon, x, x_recon
+
+        # Autoencoder - train the "generator"
+        # Perceptual loss
+        perceptual_loss = 0
+        if self.perceptual_weight > 0:
+            perceptual_loss = (
+                self.perceptual_model(frames, frames_recon).mean()
+                * self.perceptual_weight
+            )
+        # Discriminator loss (turned on after a certain epoch)
+        logits_image_fake, pred_image_fake = self.image_discriminator(frames_recon)
+        logits_video_fake, pred_video_fake = self.video_discriminator(x_recon)
+        g_image_loss = -torch.mean(logits_image_fake)
+        g_video_loss = -torch.mean(logits_video_fake)
+        g_loss = (
+            self.image_gan_weight * g_image_loss
+            + self.video_gan_weight * g_video_loss
+        )
+        disc_factor = adopt_weight(
+            self.global_step, threshold=self.discriminator_iter_start
+        )
+        aeloss = disc_factor * g_loss
+        # GAN feature matching loss - tune features such that we get the same prediction result on the discriminator
+        image_gan_feat_loss = 0
+        video_gan_feat_loss = 0
+        feat_weights = 4.0 / (3 + 1)
+        if self.image_gan_weight > 0:
+            logits_image_real, pred_image_real = self.image_discriminator(frames)
+            for i in range(len(pred_image_fake) - 1):
+                image_gan_feat_loss += (
+                    feat_weights
+                    * F.l1_loss(pred_image_fake[i], pred_image_real[i].detach())
+                    * (self.image_gan_weight > 0)
+                )
+        if self.video_gan_weight > 0:
+            logits_video_real, pred_video_real = self.video_discriminator(x)
+            for i in range(len(pred_video_fake) - 1):
+                video_gan_feat_loss += (
+                    feat_weights
+                    * F.l1_loss(pred_video_fake[i], pred_video_real[i].detach())
+                    * (self.video_gan_weight > 0)
+                )
+        gan_feat_loss = (
+            disc_factor
+            * self.gan_feat_weight
+            * (image_gan_feat_loss + video_gan_feat_loss)
+        )
+        self.log(
+            "train/g_image_loss",
+            g_image_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/g_video_loss",
+            g_video_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/image_gan_feat_loss",
+            image_gan_feat_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/video_gan_feat_loss",
+            video_gan_feat_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/perceptual_loss",
+            perceptual_loss,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/recon_loss",
+            recon_loss,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/aeloss",
+            aeloss,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/commitment_loss",
+            vq_output["commitment_loss"],
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/perplexity",
+            vq_output["perplexity"],
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        return (
+            recon_loss,
+            x_recon,
+            vq_output,
+            aeloss,
+            perceptual_loss,
+            gan_feat_loss,
+        )
+
+#was optimizer 1 
+    def forward_disc(self, x, log_image=False):
+        B, C, T, H, W = x.shape
+        # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
+        z = self.pre_vq_conv(self.encoder(x))
+        vq_output = self.codebook(z)
+        x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
+
+        # Selects one random 2D image from each 3D Image
+        frame_idx = torch.randint(0, T, [B]).cuda()
+        frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
+        frames = torch.gather(x, 2, frame_idx_selected).squeeze(2)
+        frames_recon = torch.gather(x_recon, 2, frame_idx_selected).squeeze(2)
+
+        if log_image:
+            return frames, frames_recon, x, x_recon
+
+        # Train discriminator
+        logits_image_real, _ = self.image_discriminator(frames.detach())
+        logits_video_real, _ = self.video_discriminator(x.detach())
+        logits_image_fake, _ = self.image_discriminator(frames_recon.detach())
+        logits_video_fake, _ = self.video_discriminator(x_recon.detach())
+        d_image_loss = self.disc_loss(logits_image_real, logits_image_fake)
+        d_video_loss = self.disc_loss(logits_video_real, logits_video_fake)
+        disc_factor = adopt_weight(
+            self.global_step, threshold=self.discriminator_iter_start
+        )
+        discloss = disc_factor * (
+            self.image_gan_weight * d_image_loss
+            + self.video_gan_weight * d_video_loss
+        )
+        self.log(
+            "train/logits_image_real",
+            logits_image_real.mean().detach(),
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/logits_image_fake",
+            logits_image_fake.mean().detach(),
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/logits_video_real",
+            logits_video_real.mean().detach(),
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/logits_video_fake",
+            logits_video_fake.mean().detach(),
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/d_image_loss",
+            d_image_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/d_video_loss",
+            d_video_loss,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        self.log(
+            "train/discloss",
+            discloss,
+            prog_bar=True,
+            logger=True,
+            on_step=True,
+            on_epoch=True,
+        )
+        return discloss
+
+        perceptual_loss = (
+            self.perceptual_model(frames, frames_recon) * self.perceptual_weight
+        )
+        return recon_loss, x_recon, vq_output, perceptual_loss
+
+
+    def forward(self, x, optimizer_idx=None, log_image=False):
+        B, C, T, H, W = x.shape
+        # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
+        z = self.pre_vq_conv(self.encoder(x))
+        vq_output = self.codebook(z)
+        x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
+
+        # Selects one random 2D image from each 3D Image
+        frame_idx = torch.randint(0, T, [B]).cuda()
+        frame_idx_selected = frame_idx.reshape(-1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
+        frames = torch.gather(x, 2, frame_idx_selected).squeeze(2)
+        frames_recon = torch.gather(x_recon, 2, frame_idx_selected).squeeze(2)
+
+        if log_image:
+            return frames, frames_recon, x, x_recon
+
+        if optimizer_idx == 0:
+            # Autoencoder - train the "generator"
+
+            # Perceptual loss
+            perceptual_loss = 0
+            if self.perceptual_weight > 0:
+                perceptual_loss = (
+                    self.perceptual_model(frames, frames_recon).mean()
+                    * self.perceptual_weight
+                )
+
+            # Discriminator loss (turned on after a certain epoch)
+            logits_image_fake, pred_image_fake = self.image_discriminator(frames_recon)
+            logits_video_fake, pred_video_fake = self.video_discriminator(x_recon)
+            g_image_loss = -torch.mean(logits_image_fake)
+            g_video_loss = -torch.mean(logits_video_fake)
+            g_loss = (
+                self.image_gan_weight * g_image_loss
+                + self.video_gan_weight * g_video_loss
+            )
+            disc_factor = adopt_weight(
+                self.global_step, threshold=self.discriminator_iter_start
+            )
+            aeloss = disc_factor * g_loss
+
+            # GAN feature matching loss - tune features such that we get the same prediction result on the discriminator
+            image_gan_feat_loss = 0
+            video_gan_feat_loss = 0
+            feat_weights = 4.0 / (3 + 1)
+            if self.image_gan_weight > 0:
+                logits_image_real, pred_image_real = self.image_discriminator(frames)
+                for i in range(len(pred_image_fake) - 1):
+                    image_gan_feat_loss += (
+                        feat_weights
+                        * F.l1_loss(pred_image_fake[i], pred_image_real[i].detach())
+                        * (self.image_gan_weight > 0)
+                    )
+            if self.video_gan_weight > 0:
+                logits_video_real, pred_video_real = self.video_discriminator(x)
+                for i in range(len(pred_video_fake) - 1):
+                    video_gan_feat_loss += (
+                        feat_weights
+                        * F.l1_loss(pred_video_fake[i], pred_video_real[i].detach())
+                        * (self.video_gan_weight > 0)
+                    )
+            gan_feat_loss = (
+                disc_factor
+                * self.gan_feat_weight
+                * (image_gan_feat_loss + video_gan_feat_loss)
+            )
+
+            self.log(
+                "train/g_image_loss",
+                g_image_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/g_video_loss",
+                g_video_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/image_gan_feat_loss",
+                image_gan_feat_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/video_gan_feat_loss",
+                video_gan_feat_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/perceptual_loss",
+                perceptual_loss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/recon_loss",
+                recon_loss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/aeloss",
+                aeloss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/commitment_loss",
+                vq_output["commitment_loss"],
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/perplexity",
+                vq_output["perplexity"],
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            return (
+                recon_loss,
+                x_recon,
+                vq_output,
+                aeloss,
+                perceptual_loss,
+                gan_feat_loss,
+            )
+
+        if optimizer_idx == 1:
+            # Train discriminator
+            logits_image_real, _ = self.image_discriminator(frames.detach())
+            logits_video_real, _ = self.video_discriminator(x.detach())
+
+            logits_image_fake, _ = self.image_discriminator(frames_recon.detach())
+            logits_video_fake, _ = self.video_discriminator(x_recon.detach())
+
+            d_image_loss = self.disc_loss(logits_image_real, logits_image_fake)
+            d_video_loss = self.disc_loss(logits_video_real, logits_video_fake)
+            disc_factor = adopt_weight(
+                self.global_step, threshold=self.discriminator_iter_start
+            )
+            discloss = disc_factor * (
+                self.image_gan_weight * d_image_loss
+                + self.video_gan_weight * d_video_loss
+            )
+
+            self.log(
+                "train/logits_image_real",
+                logits_image_real.mean().detach(),
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/logits_image_fake",
+                logits_image_fake.mean().detach(),
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/logits_video_real",
+                logits_video_real.mean().detach(),
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/logits_video_fake",
+                logits_video_fake.mean().detach(),
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/d_image_loss",
+                d_image_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/d_video_loss",
+                d_video_loss,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            self.log(
+                "train/discloss",
+                discloss,
+                prog_bar=True,
+                logger=True,
+                on_step=True,
+                on_epoch=True,
+            )
+            return discloss
+
+        perceptual_loss = (
+            self.perceptual_model(frames, frames_recon) * self.perceptual_weight
+        )
+        return recon_loss, x_recon, vq_output, perceptual_loss
+
+    def training_step(self, batch, batch_idx):
+        x = batch["data"]
+        (
+             recon_loss,
+             _,
+             vq_output,
+             aeloss,
+             perceptual_loss,
+             gan_feat_loss,
+         ) = self.forward_ae(x)
+        commitment_loss = vq_output["commitment_loss"]
+        loss = (
+            recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
+        )
+        #if optimizer_idx == 0:
+        #    (
+        #        recon_loss,
+        #        _,
+        #        vq_output,
+        #        aeloss,
+        #        perceptual_loss,
+        #        gan_feat_loss,
+        #    ) = self.forward(x, optimizer_idx)
+        #    commitment_loss = vq_output["commitment_loss"]
+        #    loss = (
+        #        recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
+        #    )
+        #if optimizer_idx == 1:
+        #    discloss = self.forward(x, optimizer_idx)
+        #    loss = discloss
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x = batch["data"]  # TODO: batch['stft']
+        recon_loss, x_recon, vq_output, perceptual_loss = self.forward(x)
+        volume_folder = self.results_folder / 'volumes'
+        volume_folder.mkdir(parents=True, exist_ok=True)
+        volume_path = str(volume_folder / f'{self.global_step}.nii')
+
+        if self.global_step != 0 and self.global_step % self.log_every == 0:
+            volume_tensor_to_nifti(x_recon[0], volume_path)
+
+        self.log("val/recon_loss", recon_loss, prog_bar=True)
+        self.log("val/perceptual_loss", perceptual_loss, prog_bar=True)
+        self.log("val/perplexity", vq_output["perplexity"], prog_bar=True)
+        self.log("val/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
 
     def configure_optimizers(self):
-        """Choose what optimizers and learning-rate schedulers to use in your optimization.
-        Normally you'd need one. But in the case of GANs or similar you might have multiple.
-
-        Examples:
-            https://lightning.ai/docs/pytorch/latest/common/lightning_module.html#configure-optimizers
-        """
-        opt_vq, opt_disc = self.hparams.optimizers
-        opt_vq = opt_vq(params=self.vqgan.parameters())
-        opt_disc = opt_disc(params=self.discriminator.parameters())
-
-        if self.hparams.schedulers is not None:
-            sched_vq, sched_disc = self.hparams.schedulers
-            sched_vq = sched_vq(optimizer=opt_vq)
-            sched_disc = sched_disc(optimizer=opt_disc)
-            return [opt_vq, opt_disc], [sched_vq, sched_disc]
-
-        return [opt_vq, opt_disc]
-
-    def forward(self, x: torch.Tensor):
-        # TODO: implement forward pass
-        return self.net(x)
-
-    def on_train_start(self):
-        # by default lightning executes validation step sanity checks before training starts,
-        # so it's worth to make sure validation metrics don't store results from these checks
-        pass
-
-    def model_step(
-        self,
-        batch: Any,
-        batch_idx: int,
-        mode: str,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        inputs: dict[str, torch.Tensor]
-        targets: dict[str, torch.Tensor]
-        inputs, targets = batch
-
-        imgs = inputs["image"]  # intensity augmentations applied
-        target_imgs = targets["image"]  # no intensity augmentations
-
-        decoded_images, decoded_segs, _, q_loss = self.vqgan(imgs)
-
-        disc_real = self.discriminator(target_imgs)
-        disc_fake = self.discriminator(decoded_images)
-
-        disc_factor = self.vqgan.adopt_weight(
-            self.hparams.disc_factor, self.global_step, self.hparams.disc_start
+        opt_ae = torch.optim.Adam(
+            list(self.encoder.parameters())
+            + list(self.decoder.parameters())
+            + list(self.pre_vq_conv.parameters())
+            + list(self.post_vq_conv.parameters())
+            + list(self.codebook.parameters()),
+            lr=self.lr,
+            betas=(0.5, 0.9),
         )
-
-        perceptual_loss = self.perceptual_loss(target_imgs, decoded_images)
-        rec_loss = torch.abs(target_imgs - decoded_images)
-        perceptual_rec_loss = (
-            self.hparams.perceptual_loss_factor * perceptual_loss
-            + self.hparams.rec_loss_factor * rec_loss
+        opt_disc = torch.optim.Adam(
+            list(self.image_discriminator.parameters())
+            + list(self.video_discriminator.parameters()),
+            lr=self.lr,
+            betas=(0.5, 0.9),
         )
-        perceptual_rec_loss = perceptual_rec_loss.mean()
-        g_loss = -torch.mean(disc_fake)
-
-        if decoded_segs is not None:
-            seg_loss = self.hparams.segmentation_loss_factor * self.dice_loss(
-                decoded_segs, targets["segs"]
-            )
-        else:
-            seg_loss = 0.0
-
-        if self.training:
-            # Requires grad for the VQGAN model
-            lam = self.vqgan.calculate_lambda(perceptual_rec_loss, g_loss)
-            vq_loss = (
-                perceptual_rec_loss + seg_loss + q_loss + disc_factor * lam * g_loss
-            )
-        else:
-            vq_loss = 0.0
-
-        d_loss_real = torch.mean(F.relu(1.0 - disc_real))
-        d_loss_fake = torch.mean(F.relu(1.0 + disc_fake))
-        gan_loss = disc_factor * 0.5 * (d_loss_real + d_loss_fake)
-
-        self.log(f"{mode}/perceptual_rec_loss", perceptual_rec_loss, on_step=True)
-        self.log(f"{mode}/seg_loss", seg_loss, on_step=True)
-        self.log(f"{mode}/q_loss", q_loss, on_step=True)
-        self.log(f"{mode}/vq_loss", vq_loss, on_step=True)
-        self.log(f"{mode}/gan_loss", gan_loss, on_step=True)
-
-        return vq_loss, gan_loss, decoded_images, target_imgs
-
-    def training_step(self, batch: Any, batch_idx: int):
-        opt_vq, opt_disc = self.optimizers()
-        vq_loss, gan_loss, _, _ = self.model_step(batch, batch_idx, "train")
-
-        opt_vq.zero_grad()
-        vq_loss.backward(retain_graph=True)
-
-        opt_disc.zero_grad()
-        gan_loss.backward()
-
-        opt_vq.step()
-        opt_disc.step()
-
-    def validation_step(self, batch: Any, batch_idx: int):
-        vq_loss, gan_loss, decoded_images, target_imgs = self.model_step(
-            batch, batch_idx, "val"
-        )
-
-    def test_step(self, batch: Any, batch_idx: int):
-        vq_loss, gan_loss, decoded_images, target_imgs = self.model_step(
-            batch, batch_idx, "test"
-        )
+        return [opt_ae, opt_disc], []
 
     def log_images(self, batch, **kwargs):
-        inputs, targets = batch
-        imgs = inputs["image"]
-        target_imgs = targets["image"]
-        decoded_images, decoded_segs, _, _ = self.vqgan(imgs)
+        log = dict()
+        x = batch["data"]
+        x = x.to(self.device)
+        frames, frames_rec, _, _ = self(x, log_image=True)
+        log["inputs"] = frames
+        log["reconstructions"] = frames_rec
+        # log['mean_org'] = batch['mean_org']
+        # log['std_org'] = batch['std_org']
+        return log
 
-        input_images = imgs.detach().cpu()
-        target_images = target_imgs.detach().cpu()
-        decoded_images = decoded_images.detach().cpu()
-        target_segs = targets["segs"].detach().cpu()
+    def log_videos(self, batch, **kwargs):
+        log = dict()
+        x = batch["data"]
+        _, _, x, x_rec = self(x, log_image=True)
+        log["inputs"] = x
+        log["reconstructions"] = x_rec
+        # log['mean_org'] = batch['mean_org']
+        # log['std_org'] = batch['std_org']
+        return log
 
-        images = torch.cat([target_images, input_images, decoded_images], dim=3)
-        return images, decoded_segs, target_segs
+
+def Normalize(in_channels, norm_type="group", num_groups=32):
+    assert norm_type in ["group", "batch"]
+    if norm_type == "group":
+        # TODO Changed num_groups from 32 to 8
+        return torch.nn.GroupNorm(
+            num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True
+        )
+    elif norm_type == "batch":
+        return torch.nn.SyncBatchNorm(in_channels)
+
+
+class Encoder(nn.Module):
+    def __init__(
+        self,
+        n_hiddens,
+        downsample,
+        image_channel=3,
+        norm_type="group",
+        padding_type="replicate",
+        num_groups=32,
+    ):
+        super().__init__()
+        n_times_downsample = np.array([int(math.log2(d)) for d in downsample])
+        self.conv_blocks = nn.ModuleList()
+        max_ds = n_times_downsample.max()
+
+        self.conv_first = SamePadConv3d(
+            image_channel, n_hiddens, kernel_size=3, padding_type=padding_type
+        )
+
+        for i in range(max_ds):
+            block = nn.Module()
+            in_channels = n_hiddens * 2**i
+            out_channels = n_hiddens * 2 ** (i + 1)
+            stride = tuple([2 if d > 0 else 1 for d in n_times_downsample])
+            block.down = SamePadConv3d(
+                in_channels, out_channels, 4, stride=stride, padding_type=padding_type
+            )
+            block.res = ResBlock(
+                out_channels, out_channels, norm_type=norm_type, num_groups=num_groups
+            )
+            self.conv_blocks.append(block)
+            n_times_downsample -= 1
+
+        self.final_block = nn.Sequential(
+            Normalize(out_channels, norm_type, num_groups=num_groups), SiLU()
+        )
+
+        self.out_channels = out_channels
+
+    def forward(self, x):
+        h = self.conv_first(x)
+        for block in self.conv_blocks:
+            h = block.down(h)
+            h = block.res(h)
+        h = self.final_block(h)
+        return h
+
+
+class Decoder(nn.Module):
+    def __init__(
+        self, n_hiddens, upsample, image_channel, norm_type="group", num_groups=32
+    ):
+        super().__init__()
+
+        n_times_upsample = np.array([int(math.log2(d)) for d in upsample])
+        max_us = n_times_upsample.max()
+
+        in_channels = n_hiddens * 2**max_us
+        self.final_block = nn.Sequential(
+            Normalize(in_channels, norm_type, num_groups=num_groups), SiLU()
+        )
+
+        self.conv_blocks = nn.ModuleList()
+        for i in range(max_us):
+            block = nn.Module()
+            in_channels = in_channels if i == 0 else n_hiddens * 2 ** (max_us - i + 1)
+            out_channels = n_hiddens * 2 ** (max_us - i)
+            us = tuple([2 if d > 0 else 1 for d in n_times_upsample])
+            block.up = SamePadConvTranspose3d(in_channels, out_channels, 4, stride=us)
+            block.res1 = ResBlock(
+                out_channels, out_channels, norm_type=norm_type, num_groups=num_groups
+            )
+            block.res2 = ResBlock(
+                out_channels, out_channels, norm_type=norm_type, num_groups=num_groups
+            )
+            self.conv_blocks.append(block)
+            n_times_upsample -= 1
+
+        self.conv_last = SamePadConv3d(out_channels, image_channel, kernel_size=3)
+
+    def forward(self, x):
+        h = self.final_block(x)
+        for i, block in enumerate(self.conv_blocks):
+            h = block.up(h)
+            h = block.res1(h)
+            h = block.res2(h)
+        h = self.conv_last(h)
+        return h
+
+
+class ResBlock(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels=None,
+        conv_shortcut=False,
+        dropout=0.0,
+        norm_type="group",
+        padding_type="replicate",
+        num_groups=32,
+    ):
+        super().__init__()
+        self.in_channels = in_channels
+        out_channels = in_channels if out_channels is None else out_channels
+        self.out_channels = out_channels
+        self.use_conv_shortcut = conv_shortcut
+
+        self.norm1 = Normalize(in_channels, norm_type, num_groups=num_groups)
+        self.conv1 = SamePadConv3d(
+            in_channels, out_channels, kernel_size=3, padding_type=padding_type
+        )
+        self.dropout = torch.nn.Dropout(dropout)
+        self.norm2 = Normalize(in_channels, norm_type, num_groups=num_groups)
+        self.conv2 = SamePadConv3d(
+            out_channels, out_channels, kernel_size=3, padding_type=padding_type
+        )
+        if self.in_channels != self.out_channels:
+            self.conv_shortcut = SamePadConv3d(
+                in_channels, out_channels, kernel_size=3, padding_type=padding_type
+            )
+
+    def forward(self, x):
+        h = x
+        h = self.norm1(h)
+        h = silu(h)
+        h = self.conv1(h)
+        h = self.norm2(h)
+        h = silu(h)
+        h = self.conv2(h)
+
+        if self.in_channels != self.out_channels:
+            x = self.conv_shortcut(x)
+
+        return x + h
+
+
+# Does not support dilation
+class SamePadConv3d(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        bias=True,
+        padding_type="replicate",
+    ):
+        super().__init__()
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size,) * 3
+        if isinstance(stride, int):
+            stride = (stride,) * 3
+
+        # assumes that the input shape is divisible by stride
+        total_pad = tuple([k - s for k, s in zip(kernel_size, stride)])
+        pad_input = []
+        for p in total_pad[::-1]:  # reverse since F.pad starts from last dim
+            pad_input.append((p // 2 + p % 2, p // 2))
+        pad_input = sum(pad_input, tuple())
+        self.pad_input = pad_input
+        self.padding_type = padding_type
+
+        self.conv = nn.Conv3d(
+            in_channels, out_channels, kernel_size, stride=stride, padding=0, bias=bias
+        )
+
+    def forward(self, x):
+        return self.conv(F.pad(x, self.pad_input, mode=self.padding_type))
+
+
+class SamePadConvTranspose3d(nn.Module):
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        bias=True,
+        padding_type="replicate",
+    ):
+        super().__init__()
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size,) * 3
+        if isinstance(stride, int):
+            stride = (stride,) * 3
+
+        total_pad = tuple([k - s for k, s in zip(kernel_size, stride)])
+        pad_input = []
+        for p in total_pad[::-1]:  # reverse since F.pad starts from last dim
+            pad_input.append((p // 2 + p % 2, p // 2))
+        pad_input = sum(pad_input, tuple())
+        self.pad_input = pad_input
+        self.padding_type = padding_type
+
+        self.convt = nn.ConvTranspose3d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            bias=bias,
+            padding=tuple([k - 1 for k in kernel_size]),
+        )
+
+    def forward(self, x):
+        return self.convt(F.pad(x, self.pad_input, mode=self.padding_type))
+
+
+class NLayerDiscriminator(nn.Module):
+    def __init__(
+        self,
+        input_nc,
+        ndf=64,
+        n_layers=3,
+        norm_layer=nn.SyncBatchNorm,
+        use_sigmoid=False,
+        getIntermFeat=True,
+    ):
+        # def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, use_sigmoid=False, getIntermFeat=True):
+        super(NLayerDiscriminator, self).__init__()
+        self.getIntermFeat = getIntermFeat
+        self.n_layers = n_layers
+
+        kw = 4
+        padw = int(np.ceil((kw - 1.0) / 2))
+        sequence = [
+            [
+                nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+                nn.LeakyReLU(0.2, True),
+            ]
+        ]
+
+        nf = ndf
+        for n in range(1, n_layers):
+            nf_prev = nf
+            nf = min(nf * 2, 512)
+            sequence += [
+                [
+                    nn.Conv2d(nf_prev, nf, kernel_size=kw, stride=2, padding=padw),
+                    norm_layer(nf),
+                    nn.LeakyReLU(0.2, True),
+                ]
+            ]
+
+        nf_prev = nf
+        nf = min(nf * 2, 512)
+        sequence += [
+            [
+                nn.Conv2d(nf_prev, nf, kernel_size=kw, stride=1, padding=padw),
+                norm_layer(nf),
+                nn.LeakyReLU(0.2, True),
+            ]
+        ]
+
+        sequence += [[nn.Conv2d(nf, 1, kernel_size=kw, stride=1, padding=padw)]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, "model" + str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input):
+        if self.getIntermFeat:
+            res = [input]
+            for n in range(self.n_layers + 2):
+                model = getattr(self, "model" + str(n))
+                res.append(model(res[-1]))
+            return res[-1], res[1:]
+        else:
+            return self.model(input), None
+
+
+class NLayerDiscriminator3D(nn.Module):
+    def __init__(
+        self,
+        input_nc,
+        ndf=64,
+        n_layers=3,
+        norm_layer=nn.SyncBatchNorm,
+        use_sigmoid=False,
+        getIntermFeat=True,
+    ):
+        super(NLayerDiscriminator3D, self).__init__()
+        self.getIntermFeat = getIntermFeat
+        self.n_layers = n_layers
+
+        kw = 4
+        padw = int(np.ceil((kw - 1.0) / 2))
+        sequence = [
+            [
+                nn.Conv3d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw),
+                nn.LeakyReLU(0.2, True),
+            ]
+        ]
+
+        nf = ndf
+        for n in range(1, n_layers):
+            nf_prev = nf
+            nf = min(nf * 2, 512)
+            sequence += [
+                [
+                    nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=2, padding=padw),
+                    norm_layer(nf),
+                    nn.LeakyReLU(0.2, True),
+                ]
+            ]
+
+        nf_prev = nf
+        nf = min(nf * 2, 512)
+        sequence += [
+            [
+                nn.Conv3d(nf_prev, nf, kernel_size=kw, stride=1, padding=padw),
+                norm_layer(nf),
+                nn.LeakyReLU(0.2, True),
+            ]
+        ]
+
+        sequence += [[nn.Conv3d(nf, 1, kernel_size=kw, stride=1, padding=padw)]]
+
+        if use_sigmoid:
+            sequence += [[nn.Sigmoid()]]
+
+        if getIntermFeat:
+            for n in range(len(sequence)):
+                setattr(self, "model" + str(n), nn.Sequential(*sequence[n]))
+        else:
+            sequence_stream = []
+            for n in range(len(sequence)):
+                sequence_stream += sequence[n]
+            self.model = nn.Sequential(*sequence_stream)
+
+    def forward(self, input):
+        if self.getIntermFeat:
+            res = [input]
+            for n in range(self.n_layers + 2):
+                model = getattr(self, "model" + str(n))
+                res.append(model(res[-1]))
+            return res[-1], res[1:]
+        else:
+            return self.model(input), None

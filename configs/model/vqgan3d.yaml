@@ -1,9 +1,8 @@
-_target_: src.models.vq_gan_3d.VQGAN3D
+_target_: src.models.VQGAN3D
 
 embedding_dim: 64 # Needs to be the same as n_hiddens * 2**(downsample-1)
 n_codes: 2048
 lr: 3e-4
-
 # encoder/decoder args
 n_hiddens: 32
 downsample: [2,2,2]
@@ -32,3 +31,26 @@ perceptual_weight: 1.0
 # Not used
 # i3d_feat: False
 # global_emb_dim: 8
+
+#optimizers:
+#  - _target_: torch.optim.Adam
+#    _partial_: true
+#    lr: 1e-4
+#    betas: [0.5, 0.9]
+#  - _target_: torch.optim.Adam
+#    _partial_: true
+#    lr: 4e-4
+#    betas: [0.5, 0.9]
+#
+#
+#schedulers:
+# - generator:
+#    _target_: torch.optim.lr_scheduler.StepLR
+#    _partial_: true
+#    step_size: 5000
+#    gamma: 0.5
+# - discriminator:
+#    _target_: torch.optim.lr_scheduler.StepLR
+#    _partial_: true
+#    step_size: 5000
+#    gamma: 0.5

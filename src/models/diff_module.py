@@ -5,7 +5,9 @@ import pytorch_lightning as pl
 from .ddpm import Unet3D, GaussianDiffusion
 from .ddpm import *
 import numpy as np
+import lightning
 from lightning import LightningModule
+from lightning.pytorch.callbacks import ModelCheckpoint
 from src.utils.pylogger import get_pylogger
 import nibabel as nib 
 
@@ -23,7 +25,7 @@ def volume_tensor_to_nifti(tensor, path):
         path (str): File path to save the NIfTI file, e.g. 'output_volume.nii'
     """
     # Normalize the tensor to [0, 1] range.
-    tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
+    #tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
     
     # If there's a single channel, remove that dimension.
     if tensor.shape[0] == 1:
@@ -89,6 +91,7 @@ class DiffusionModule(LightningModule):
         results_folder: str,
         amp: bool,
         optimizer: list[torch.optim.Optimizer],
+        lr_scheduler: torch.optim.lr_scheduler,
         batch_size: int,
     ):
         """
@@ -138,6 +141,15 @@ class DiffusionModule(LightningModule):
         # Initialize a training step counter.
         self.step = 0
 
+    #def configure_callbacks(self, ckpt_folder):
+    #    checkpoint_callback = ModelCheckpoint(
+    #    dirpath=ckpt_folder,
+    #    filename='model-{epoch}',
+    #    save_top_k=-1,  # Keep all checkpoints
+    #    save_weights_only=False  # Make sure to save optimizer state
+    #    )
+    #    return [checkpoint_callback]
+    
     def configure_optimizers(self):
         """Choose what optimizers and learning-rate schedulers to use in your optimization.
         Normally you'd need one. But in the case of GANs or similar you might have multiple.
@@ -149,17 +161,18 @@ class DiffusionModule(LightningModule):
         opt = opt(params=self.parameters())
 
         # no lr scheduler for now
-        #if self.hparams.scheduler is not None:
-        #    sched = self.hparams.scheduler
-        #    sched = sched(optimizer=opt)
-        #    return {"optimizer": opt, "lr_scheduler": sched}
+        if self.hparams.lr_scheduler is not None:
+            sched = self.hparams.lr_scheduler
+            sched = sched(optimizer=opt)
+            return {"optimizer": opt, "lr_scheduler": sched}
 
         return opt
 
-    def forward(self, x: torch.Tensor, t: torch.Tensor, cond=None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: torch.Tensor, cond=None) -> torch.Tensor: # fxn not used
         """
         Forward pass for inference/sampling. Calls the UNet inside the diffusion model.
         """
+        assert(1==2)
         return self.diffusion.unet(x, t, cond=cond)
 
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
@@ -172,7 +185,7 @@ class DiffusionModule(LightningModule):
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
 
-        if (batch_idx + 1) % self.gradient_accumulate_every == 0:
+        if (batch_idx + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
             if self.max_grad_norm is not None:
                 self.scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(self.diffusion.parameters(), self.max_grad_norm)
@@ -205,7 +218,7 @@ class DiffusionModule(LightningModule):
             #video_folder = self.results_folder / 'gifs'
             #video_folder.mkdir(exist_ok=True, parents=True)
             #video_path = str(video_folder / f'{milestone}.gif')
-            
+            milestone = self.global_step
             volume_folder = self.results_folder / 'volumes'
             volume_folder.mkdir(exist_ok=True, parents=True)
             volume_path = str(volume_folder / f'{milestone}.nii')
@@ -215,17 +228,25 @@ class DiffusionModule(LightningModule):
             #video_tensor_to_gif(one_gif, video_path)
             # Save a checkpoint.
             ckpt_folder = self.results_folder / 'checkpoints'
-            ckpt_folder.mkdir(exist_ok=True, parents=True)
-            ckpt_path = ckpt_folder / f'model-{milestone}.pt'
-            torch.save({
-                'step': self.global_step,
-                'model': self.diffusion.state_dict(),
-                'ema': self.ema_model.state_dict(),
-                'scaler': self.scaler.state_dict()
-            }, str(ckpt_path))
+            #ckpt_folder.mkdir(exist_ok=True, parents=True)
+            #ckpt_path = ckpt_folder / f'model-{milestone}.pt'
+            #torch.save({
+            #    'step': self.global_step,
+            #    'state_dict': self.diffusion.state_dict(),
+            #    'ema': self.ema_model.state_dict(),
+            #    'scaler': self.scaler.state_dict(),
+            #    'pytorch-lightning_version': lightning.__version__
+            #}, str(ckpt_path))
+            #torch.save({
+            #    'step': self.global_step,
+            #    'state_dict': self.state_dict(),  # This gets the entire module's state dict with proper nesting
+            #    'ema': self.ema_model.state_dict(),
+            #    'scaler': self.scaler.state_dict(),
+            #    'pytorch-lightning_version': lightning.__version__
+            #}, str(ckpt_path))
             self.ema_model.train()
 
-        self.step += 1
+        self.step += 1 # this aint doing anything 
         return loss
 
     def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:

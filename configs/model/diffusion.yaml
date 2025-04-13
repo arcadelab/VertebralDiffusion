@@ -3,12 +3,12 @@ _target_: src.models.DiffusionModule
 ema_decay: 0.995                  # EMA decay factor
 #train_lr: 1e-4                    # Learning rate for training
 #train_num_steps: 100000           # Total number of training steps
-gradient_accumulate_every: 1      # Number of steps to accumulate gradients before an optimizer update
+gradient_accumulate_every: 2      # Number of steps to accumulate gradients before an optimizer update
 amp: false                        # Use mixed precision training (true/false)
 step_start_ema: 2000              # Start EMA updates after this many steps
 update_ema_every: 10              # Frequency (in steps) to update the EMA model
-save_and_sample_every:  2000       # Frequency (in steps) to save checkpoints and generate samples
-results_folder: ${paths.root_dir}/results       # Folder to save checkpoints and sample outputs
+save_and_sample_every:  1000       # Frequency (in steps) to save checkpoints and generate samples
+results_folder: ${hydra:runtime.output_dir}       # Folder to save checkpoints and sample outputs
 num_sample_rows: 1                # Number of rows in the grid when visualizing samples
 max_grad_norm: null               # Maximum gradient norm for clipping (set to null if not used)
 batch_size: ${data.batch_size}                    # Batch size for training
@@ -25,7 +25,7 @@ diffusion:
   image_size: ${data.dim}                       # Must match unet3d.diffusion_img_size
   num_frames: ${data.dim}                       # Temporal depth (number of frames) for each sample
   timesteps: 300                   # Total number of diffusion steps
-  loss_type: "l2"                   # Type of loss ("l1" or "l2")
+  loss_type: "l1"                   # Type of loss ("l1" or "l2")
   channels: 1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
   vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
 
@@ -33,8 +33,22 @@ diffusion:
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 1e-5
+  lr: 1e-4
   eps: 1e-08
   betas: [0.9, 0.999]
   weight_decay: 0.01
                  
+
+lr_scheduler:
+  _target_: torch.optim.lr_scheduler.CosineAnnealingWarmRestarts # gonna use warm restart for hopefully escaping local minima 
+  _partial_: true                    # Optional: allows partial instantiation if desired
+  optimizer: ${model.optimizer}            # Interpolates the optimizer config defined elsewhere
+  T_0: 50                         # First restart after 50 epochs
+  T_mult: 1                       # Each cycle has the same duration (50 epochs)
+  eta_min: 1e-8                   # Minimum learning rate at the end of each cycle
+  last_epoch: -1                  # Start counting from the beginning
+  verbose: True                  # Set to True if you want to see restart messages
+  
+  
+  #T_max: 150
+  #eta_min: 1e-8
