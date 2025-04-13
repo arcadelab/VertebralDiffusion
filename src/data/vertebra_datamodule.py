@@ -27,6 +27,8 @@ warnings.filterwarnings(
     module="torchio.data.image"
 )
 
+from ..augmentations import RandomUniformRotation
+
 
 log = get_pylogger(__name__)
 
@@ -64,6 +66,7 @@ class NiftiDataset(Dataset):
     def data_aug(self):
         #log.error(self.dim)
         #assert self.dim == 56
+        rotation = RandomUniformRotation()
         train_transform = tio.Compose([
         #tio.RandomAffine(
         #    scales=(0.9, 1.1),       
@@ -71,38 +74,26 @@ class NiftiDataset(Dataset):
         #    translation=0,           
         #    p=0.75                  
         #),
+        rotation,
         tio.Resample(target=(1, 1, 0.5)),
-        tio.RandomMotion(
-            degrees = np.pi,
-            translation=0,
-        ),
-        #tio.Resize((self.dim, self.dim, self.dim)),
-        tio.CropOrPad(
-            target_shape = (self.dim, self.dim, self.dim),
-            padding_mode=-1024
-            ),
-        tio.RescaleIntensity(),
+        tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu
+        #tio.CropOrPad(
+        #    target_shape = (self.dim, self.dim, self.dim),
+        #    padding_mode=-1024
+        #    ),
+        #tio.RescaleIntensity(),
         ])
         
         val_transform = tio.Compose([
-            tio.Resample(target=(1, 1, 0.5)),
-            tio.RescaleIntensity(),
-            #tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do this but wait unitl larger size
-            tio.CropOrPad(
-            target_shape = (self.dim, self.dim, self.dim),
-            padding_mode= -1024
-            )
+            #tio.Resample(target=(1, 1, 0.5)),
+            rotation,
+           tio.Resample(target=(1, 1, 0.5)),
+            tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu 
+            #tio.CropOrPad(
+            #target_shape = (self.dim, self.dim, self.dim),
+            #padding_mode= -1024
+            #)
         ])
-        #size_transform = tio.Resize((128, 128, 128))
-        size_transform = tio.Resize((32,32, 32))# to many OOM so shrink
-        #pad_transform = tio.CropOrPad(
-        #    target_shape = (128, 128, 128),
-        #    padding_mode='constant'
-        #) # constant_values =-1024
-        pad_transform = tio.CropOrPad(
-            target_shape = (self.dim, self.dim, self.dim),
-            padding_mode='constant'
-        )
         return train_transform, val_transform
     
 
@@ -112,7 +103,7 @@ class NiftiDataset(Dataset):
         img_nib = nib.load(file_path)
         img = img_nib.get_fdata()
         train_aug, val_aug = self.data_aug()
-
+        #log.error(train_aug)
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
         img = img.clone().detach().to(torch.float32).unsqueeze(0)
@@ -124,13 +115,13 @@ class NiftiDataset(Dataset):
         #img = pad_transform(img) #resize(img)#pad_transform(img)
         #print(img.shape)
 
-        augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
-        augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
+        #augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
+        #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
 
         # Define save path
-        augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
-        log.error(augmented_path)
-        nib.save(augmented_img_nib, augmented_path)
+        #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
+        #log.error(augmented_path)
+        #nib.save(augmented_img_nib, augmented_path)
 
         #training pipeline expects a 4d tensor so don't need to squeeze it 
         #img = img.squeeze(0)
@@ -145,7 +136,8 @@ class NiftiDataModule(LightningDataModule):
         data_dir: str = "data/nifti/",
         train_val_test_split: Tuple[int, int, int] = (70, 10, 20),
         batch_size: int = 4,
-        dim: int = 56, 
+        dim: int = 128, 
+        level: str = "L",
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> None:
@@ -155,6 +147,7 @@ class NiftiDataModule(LightningDataModule):
         self.data_train = None
         self.data_val = None
         self.data_test = None
+        self.level = level
 
     def prepare_data(self) -> None:
         # Data is assumed to be available locally.
@@ -173,6 +166,9 @@ class NiftiDataModule(LightningDataModule):
         
         # Find all NIfTI files (supporting both .nii and .nii.gz extensions).
         nifti_files = sorted(list(data_dir.rglob("*.nii")) + list(data_dir.rglob("*.nii.gz")))
+        nifti_files = sorted([f for f in nifti_files if self.level in f.name])
+        #log.error(nifti_files)
+        #log.error(self.level)
         if not nifti_files:
             raise FileNotFoundError(f"No NIfTI files found in {data_dir}")
         

@@ -4,7 +4,7 @@
 root_dir: "."
 
 # path to data directory
-data_dir:  /data1/sampath/diffusion_vertebrae_data/
+data_dir:  /mnt/oracle_data/killeen/NMDID-ARCADE/cropped_vertebrae_data/
 #/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data
 
 # path to logging directory
