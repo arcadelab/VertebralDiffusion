@@ -5,7 +5,7 @@ import math
 import argparse
 import numpy as np
 import pickle as pkl
-
+from pathlib import Path
 import pytorch_lightning as pl
 from lightning import LightningModule
 import torch
@@ -40,7 +40,7 @@ def volume_tensor_to_nifti(tensor, path):
         tensor = tensor.squeeze(0)
     
     # Convert the tensor to a NumPy array. If needed, move to CPU.
-    np_volume = tensor.cpu().numpy()
+    np_volume = tensor.cpu().detach().numpy()
     log.error(np_volume.shape)
     
     # Create an identity affine. You can change this if you have spatial metadata.
@@ -86,7 +86,7 @@ def vanilla_d_loss(logits_real, logits_fake):
 class VQGAN3D(LightningModule):
     def __init__(
         self,
-        results_folder: str = "results",
+        results_folder: str = None,
         log_every: int = 1,
         n_codes: int = 2048,
         embedding_dim: int = 64,
@@ -111,7 +111,7 @@ class VQGAN3D(LightningModule):
         no_random_restart: bool = False,
     ):
         super().__init__()
-        self.results_folder = results_folder
+        self.results_folder = Path(results_folder)
         self.log_every = log_every
         self.lr = lr
         self.discriminator_iter_start = discriminator_iter_start
@@ -238,6 +238,7 @@ class VQGAN3D(LightningModule):
             self.image_gan_weight * g_image_loss
             + self.video_gan_weight * g_video_loss
         )
+        #log.error(self.global_step) # does actually increment now once i manually step the optimizers
         disc_factor = adopt_weight(
             self.global_step, threshold=self.discriminator_iter_start
         )
@@ -658,8 +659,11 @@ class VQGAN3D(LightningModule):
         )
         return recon_loss, x_recon, vq_output, perceptual_loss
 
-    def training_step(self, batch, batch_idx):
-        x = batch["data"]
+    def training_step(self, batch):
+        #print(f"Batch idx: {batch_idx}")
+        #print(batch)
+        x = batch#["data"]
+        opt_ae, opt_disc = self.optimizers()
         (
              recon_loss,
              _,
@@ -667,43 +671,72 @@ class VQGAN3D(LightningModule):
              aeloss,
              perceptual_loss,
              gan_feat_loss,
-         ) = self.forward_ae(x)
+        ) = self.forward_ae(x)
         commitment_loss = vq_output["commitment_loss"]
-        loss = (
-            recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
-        )
-        #if optimizer_idx == 0:
-        #    (
-        #        recon_loss,
-        #        _,
-        #        vq_output,
-        #        aeloss,
-        #        perceptual_loss,
-        #        gan_feat_loss,
-        #    ) = self.forward(x, optimizer_idx)
-        #    commitment_loss = vq_output["commitment_loss"]
-        #    loss = (
-        #        recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
-        #    )
-        #if optimizer_idx == 1:
-        #    discloss = self.forward(x, optimizer_idx)
-        #    loss = discloss
-        return loss
+        loss_sum = (
+                recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss
+            )
+        self.toggle_optimizer(opt_ae)
+        opt_ae.zero_grad()
+        self.manual_backward(loss_sum)
+        opt_ae.step()
+        self.untoggle_optimizer(opt_ae)
 
-    def validation_step(self, batch, batch_idx):
-        x = batch["data"]  # TODO: batch['stft']
-        recon_loss, x_recon, vq_output, perceptual_loss = self.forward(x)
-        volume_folder = self.results_folder / 'volumes'
-        volume_folder.mkdir(parents=True, exist_ok=True)
-        volume_path = str(volume_folder / f'{self.global_step}.nii')
+        self.toggle_optimizer(opt_disc)
+        discloss = self.forward_disc(x)
+        opt_disc.zero_grad()
+        self.manual_backward(discloss)
+        opt_disc.step()
+        self.untoggle_optimizer(opt_disc)
 
-        if self.global_step != 0 and self.global_step % self.log_every == 0:
+        #self.log("train/recon_loss", recon_loss, prog_bar=True)
+        #self.log("train/perceptual_loss", perceptual_loss, prog_bar=True)
+        #self.log("train/perplexity", vq_output["perplexity"], prog_bar=True)
+        #self.log("train/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
+        #self.log("train/disc_loss",discloss, prog_bar=True)
+        #self.log("train/loss", loss_sum, prog_bar=True)
+
+    def validation_step(self, batch):
+        #assert(1==2)
+        #print(f"Batch idx: {batch_idx}")
+        #print(batch.shape)
+        x = batch#["data"]  # TODO: batch['stft']
+        recon_loss, x_recon, vq_output, aeloss, perceptual_loss, gan_feat_loss = self.forward_ae(x)
+        
+        if self.global_step % self.log_every == 0:
+            volume_folder = self.results_folder / 'volumes'
+            volume_folder.mkdir(parents=True, exist_ok=True)
+            volume_path = str(volume_folder / f'{self.global_step}.nii')
+
+            #if self.global_step != 0 and self.global_step % self.log_every == 0:
+            log.error(x_recon[0].shape)
+            log.error(volume_path)
+            #assert(1==2)
             volume_tensor_to_nifti(x_recon[0], volume_path)
+        commitment_loss = vq_output["commitment_loss"]
+        loss = (recon_loss + commitment_loss + aeloss + perceptual_loss + gan_feat_loss)
 
+        self.log("val/loss", loss, prog_bar=True)
         self.log("val/recon_loss", recon_loss, prog_bar=True)
         self.log("val/perceptual_loss", perceptual_loss, prog_bar=True)
         self.log("val/perplexity", vq_output["perplexity"], prog_bar=True)
         self.log("val/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
+
+    def test_step(self, batch):
+        
+        #print(f"Batch idx: {batch_idx}")
+        #print(batch.shape)
+        x = batch#["data"]  # TODO: batch['stft']
+        recon_loss, x_recon, vq_output, _, perceptual_loss, _ = self.forward_ae(x)
+        volume_folder = self.results_folder / 'volumes'
+        volume_folder.mkdir(parents=True, exist_ok=True)
+        volume_path = str(volume_folder / f'{self.global_step}.nii')
+        #if self.global_step != 0 and self.global_step % self.log_every == 0:
+        #    volume_tensor_to_nifti(x_recon[0], volume_path)
+        self.log("test/recon_loss", recon_loss, prog_bar=True)
+        self.log("test/perceptual_loss", perceptual_loss, prog_bar=True)
+        self.log("test/perplexity", vq_output["perplexity"], prog_bar=True)
+        self.log("test/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
 
     def configure_optimizers(self):
         opt_ae = torch.optim.Adam(

@@ -26,6 +26,7 @@ from torch.utils.data import Dataset, DataLoader
 
 import matplotlib.pyplot as plt
 from src.utils.pylogger import get_pylogger
+from ..vqgan_module import VQGAN3D
 
 log = get_pylogger(__name__)
 # helpers functions
@@ -204,6 +205,7 @@ class Block(nn.Module):
     def __init__(self, dim, dim_out, groups=8):
         super().__init__()
         self.proj = nn.Conv3d(dim, dim_out, (1, 3, 3), padding=(0, 1, 1))
+
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
@@ -220,6 +222,7 @@ class Block(nn.Module):
 
 class ResnetBlock(nn.Module):
     def __init__(self, dim, dim_out, *, time_emb_dim=None, groups=8):
+        groups = 6
         super().__init__()
         self.mlp = nn.Sequential(
             nn.SiLU(),
@@ -559,6 +562,8 @@ class Unet3D(LightningModule):
             x = spatial_attn(x)
             x = temporal_attn(x, pos_bias=time_rel_pos_bias,
                               focus_present_mask=focus_present_mask)
+            log.error('appending to h')
+            log.error(x.shape)
             h.append(x)
             x = downsample(x)
 
@@ -569,6 +574,15 @@ class Unet3D(LightningModule):
         x = self.mid_block2(x, t)
 
         for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
+            log.error('spatial mismatch')
+            test = h.copy()
+            log.error(len(test))
+            log.error(test[0].shape)
+            log.error(x.shape)
+            log.error(test.pop().shape)
+            #log.error(x.shape)
+            #log.error(h.pop().shape)
+            #log.error(torch.cat((x, h.pop()), dim=1).shape)
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
             x = block2(x, t)
@@ -624,12 +638,12 @@ class GaussianDiffusion(nn.Module):
         self.num_frames = num_frames
         self.denoise_fn = denoise_fn
         
-        #we're not training a vq-gan for now
-        #if vqgan_ckpt:
-        #    self.vqgan = VQGAN.load_from_checkpoint(vqgan_ckpt).cuda()
-        #    self.vqgan.eval()
-        #else:
-        self.vqgan = None
+        # we're not training a vq-gan for now - Now we are 04/15
+        if vqgan_ckpt:
+            self.vqgan = VQGAN3D.load_from_checkpoint(vqgan_ckpt).cuda()
+            self.vqgan.eval()
+        else:
+            self.vqgan = None
 
         betas = cosine_beta_schedule(timesteps)
 
@@ -773,14 +787,14 @@ class GaussianDiffusion(nn.Module):
         _sample = self.p_sample_loop(
             (batch_size, channels, num_frames, image_size, image_size), cond=cond, cond_scale=cond_scale)
 
-        #if isinstance(self.vqgan, VQGAN):
-        #    # denormalize TODO: Remove eventually
-        #    _sample = (((_sample + 1.0) / 2.0) * (self.vqgan.codebook.embeddings.max() -
-        #                                          self.vqgan.codebook.embeddings.min())) + self.vqgan.codebook.embeddings.min()#
-#
- #           _sample = self.vqgan.decode(_sample, quantize=True)
-  #      else:
-        unnormalize_img(_sample)
+        if isinstance(self.vqgan, VQGAN3D):
+            # denormalize TODO: Remove eventually
+            _sample = (((_sample + 1.0) / 2.0) * (self.vqgan.codebook.embeddings.max() -
+                                                  self.vqgan.codebook.embeddings.min())) + self.vqgan.codebook.embeddings.min()#
+
+            _sample = self.vqgan.decode(_sample, quantize=True)
+        else:
+            unnormalize_img(_sample)
 
         return _sample
 
@@ -821,7 +835,7 @@ class GaussianDiffusion(nn.Module):
             cond = bert_embed(
                 tokenize(cond), return_cls_repr=self.text_use_bert_cls)
             cond = cond.to(device)
-
+        assert(cond == None)
         x_recon = self.denoise_fn(x_noisy, t, cond=cond, **kwargs)
 
         if self.loss_type == 'l1':
@@ -834,17 +848,18 @@ class GaussianDiffusion(nn.Module):
         return loss
 
     def forward(self, x, *args, **kwargs):
-        #if isinstance(self.vqgan, VQGAN):
-        #    with torch.no_grad():
-        #        x = self.vqgan.encode(
-        #            x, quantize=False, include_embeddings=True)
-        #        # normalize to -1 and 1
-        #        x = ((x - self.vqgan.codebook.embeddings.min()) /
-        #             (self.vqgan.codebook.embeddings.max() -
-        #              self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
-        #else:
-        #log.error(x.shape)
-        x = normalize_img(x)
+        if isinstance(self.vqgan, VQGAN3D):
+            with torch.no_grad():
+                x = self.vqgan.encode(
+                    x, quantize=False, include_embeddings=True)
+                log.error(x.shape)
+                # normalize to -1 and 1
+                x = ((x - self.vqgan.codebook.embeddings.min()) /
+                     (self.vqgan.codebook.embeddings.max() -
+                      self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
+        else:
+            log.info("You're doing pixel space diffusion so no need to encode")
+            x = normalize_img(x)
 
         b, device, img_size, = x.shape[0], x.device, self.image_size
         check_shape(x, 'b c f h w', c=self.channels,

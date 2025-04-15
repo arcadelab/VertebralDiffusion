@@ -6,7 +6,8 @@ lr: 3e-4
 # encoder/decoder args
 n_hiddens: 32
 downsample: [2,2,2]
-image_channels: 3
+image_channels: 1
+results_folder: ${hydra:runtime.output_dir}       # Folder to save checkpoints and sample outputs
 norm_type: group
 padding_type: replicate
 num_groups: 32
@@ -20,6 +21,8 @@ disc_channels: 64
 disc_layers: 3
 discriminator_iter_start: 50000
 disc_loss_type: hinge
+
+log_every: 1
 
 
 image_gan_weight: 1.0
