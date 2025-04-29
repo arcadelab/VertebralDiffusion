@@ -5,7 +5,7 @@
 defaults:
   - _self_
   - data: vertebrae
-  - model: vqgan3d #diffusion #vqgan3d
+  - model: vqgan3d_seg #diffusion #vqgan3d
   - callbacks: default
   - logger: wandb # set logger here or use command line (e.g. `python train.py logger=tensorboard`)
   - trainer: gpu

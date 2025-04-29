@@ -16,15 +16,15 @@ cache_dir:  ${paths.cache_dir}                  # Batch size for training
 
 unet3d:
   _target_: src.models.ddpm.Unet3D
-  dim: 128 #${data.dim}  #this has to be the same as the vqgan now           # Spatial resolution, must match diffusion.image_size
-  dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
+  dim: ${data.dim} # 64  #this has to be the same as the vqgan now           # Spatial resolution, must match diffusion.image_size
+  dim_mults: [1, 2, 4] #8]           # Multiplicative factors for channel scaling at each resolution
   channels: 64         # Number of channels (idk why we have 8 but ask later)
 
 diffusion:
   _target_: src.models.ddpm.GaussianDiffusion
   denoise_fn: src.models.ddpm.Unet3D
-  image_size: 32 #${data.dim} #this has to be the same as the vqgan now                   
-  num_frames: 32 #${data.dim}   #this has to be the same as the vqgan now                      
+  image_size: 28 #${data.dim} #this has to be the same as the vqgan now                   
+  num_frames: 28 #${data.dim}   #this has to be the same as the vqgan now                      
   timesteps: 300                   # Total number of diffusion steps
   loss_type: "l2"                   # Type of loss ("l1" or "l2")
   channels: 64 #1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)

@@ -7,6 +7,7 @@ root_dir: "."
 data_dir:  /mnt/oracle_data/killeen/NMDID-ARCADE/cropped_vertebrae_data/
 #/mnt/oracle_data/killeen/NMDID-ARCADE/diffusion_vertebrae_data
 whole_CT_dir: /mnt/oracle_data/killeen/NMDID-ARCADE/nifti
+seg_dir: /mnt/oracle_data/killeen/NMDID-ARCADE/TotalSegmentator
 # path to logging directory
 log_dir: ${paths.root_dir}/logs/
 

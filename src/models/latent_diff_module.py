@@ -195,88 +195,61 @@ class LatentDiffusionModule(LightningModule):
         assert(1==2)
         return self.diffusion.unet(x, t, cond=cond)
 
-    def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+    def training_step(self, batch: Any) -> torch.Tensor:
         # Retrieve the optimizer.
         opt = self.optimizers()
         # Assume 'batch' is already on the correct device.
         with autocast(enabled=self.amp):
             #log.error(batch[0].shape)
-            loss = self.diffusion(batch)
+            loss, _ = self.diffusion(batch)
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
 
-        if (batch_idx + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
+        if (self.step + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
             if self.max_grad_norm is not None:
                 self.scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(self.diffusion.parameters(), self.max_grad_norm)
             self.scaler.step(opt)
             self.scaler.update()
             opt.zero_grad()
-
-        self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)
-        #log.info(f"Step {self.global_step}: loss = {loss.item()}") this actually increments good 
-        # EMA update after step_start_ema and every update_ema_every steps.
-        if self.global_step >= self.step_start_ema and (self.global_step % self.update_ema_every == 0):
-            self.ema.update_model_average(self.ema_model, self.diffusion)
-
-        # Save checkpoints and sample images at intervals.
-        if self.global_step != 0 and self.global_step % self.save_and_sample_every == 0:
+            
+            # IN orig code, EMA model only updates after grad_accum is done but here I can't do that so i only execute
+            # after the grad has accumulated`
+            #log.info(f"Step {self.global_step}: loss = {loss.item()}") this actually increments good 
+            # EMA update after step_start_ema and every update_ema_every steps.
+            if self.step >= self.step_start_ema and (self.step % self.update_ema_every == 0):
+                self.ema.update_model_average(self.ema_model, self.diffusion)
+            # Save checkpoints and sample images at intervals.
+        if self.step != 0 and self.step % self.save_and_sample_every == 0:
             self.ema_model.eval()
             with torch.no_grad():
-                milestone = self.global_step
+                milestone = self.step
                 num_samples = self.num_sample_rows ** 2
                 batches = num_to_groups(num_samples, self.batch_size)
                 # Sample using the EMA model (assumes self.diffusion.sample exists).
                 all_videos_list = list(map(lambda n: self.ema_model.sample(batch_size=n), batches))
                 all_videos_list = torch.cat(all_videos_list, dim=0)
                 log.info(all_videos_list.shape)
-
-            # Optionally pad and rearrange the samples for visualization.
-            #all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
-            #padded_volume = F.pad(all_videos_list, (2, 2, 2, 2))
-            #one_gif = rearrange(all_videos_list, '(i j) c f h w -> c f (i h) (j w)', i=self.num_sample_rows)
-            #video_folder = self.results_folder / 'gifs'
-            #video_folder.mkdir(exist_ok=True, parents=True)
-            #video_path = str(video_folder / f'{milestone}.gif')
             milestone = self.global_step
             volume_folder = self.results_folder / 'volumes'
             volume_folder.mkdir(exist_ok=True, parents=True)
             volume_path = str(volume_folder / f'{milestone}.nii')
-
             # Save the volume using the custom function.
             volume_tensor_to_nifti(all_videos_list, volume_path)
-            #video_tensor_to_gif(one_gif, video_path)
-            # Save a checkpoint.
             ckpt_folder = self.results_folder / 'checkpoints'
-            #ckpt_folder.mkdir(exist_ok=True, parents=True)
-            #ckpt_path = ckpt_folder / f'model-{milestone}.pt'
-            #torch.save({
-            #    'step': self.global_step,
-            #    'state_dict': self.diffusion.state_dict(),
-            #    'ema': self.ema_model.state_dict(),
-            #    'scaler': self.scaler.state_dict(),
-            #    'pytorch-lightning_version': lightning.__version__
-            #}, str(ckpt_path))
-            #torch.save({
-            #    'step': self.global_step,
-            #    'state_dict': self.state_dict(),  # This gets the entire module's state dict with proper nesting
-            #    'ema': self.ema_model.state_dict(),
-            #    'scaler': self.scaler.state_dict(),
-            #    'pytorch-lightning_version': lightning.__version__
-            #}, str(ckpt_path))
             self.ema_model.train() # sets back to train model 
 
-        self.step += 1 # this aint doing anything 
+        self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)
+        self.step += 1
         return loss
-
-    def validation_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+    def validation_step(self, batch: Any) -> torch.Tensor:
         #log.error(batch[0].shape)
         loss = self.diffusion(batch)
         self.log("val/loss", loss, prog_bar=True)
         return loss
 
-    def test_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
+    def test_step(self, batch: Any) -> torch.Tensor:
         loss = self.diffusion(batch)
         self.log("test/loss", loss, prog_bar=True)
         return loss

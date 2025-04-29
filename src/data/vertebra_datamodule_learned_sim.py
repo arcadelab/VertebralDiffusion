@@ -107,8 +107,8 @@ class NiftiDataset(Dataset):
             img = val_aug(img)
 
         return {
-            "vertebrae"       : img,      
-            "whole_ct_volume" : whole_CT        
+            "vertebrae": img,      
+            "whole_CT" : whole_CT        
         }
 
 

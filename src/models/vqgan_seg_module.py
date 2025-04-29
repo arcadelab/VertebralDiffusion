@@ -21,6 +21,32 @@ from .vq_gan_3d.codebook import Codebook
 
 log = get_pylogger(__name__)
 
+def dice_loss_vol(x: torch.Tensor,
+                  x_recon: torch.Tensor,
+                  bg_val: float = 3.912334,
+                  tol: float = 1e-4,
+                  eps: float = 1e-6) -> torch.Tensor:
+    """
+    Compute Dice loss between ground-truth volume x and reconstructed volume x_recon.
+    Background in x is bg_val; bone in prediction is x_recon > 0.
+    """
+    # Binary masks
+    is_bg      = torch.isclose(x, torch.tensor(bg_val, device=x.device), atol=tol)
+    gt_mask    = (~is_bg).float()
+    pred_mask = (x_recon > 0).float()
+    
+    # Sum over all non-batch dims
+    flatten_dims = tuple(range(1, x.ndim))
+    intersection = (pred_mask * gt_mask).sum(dim=flatten_dims)
+    cardinality  = pred_mask.sum(dim=flatten_dims) + gt_mask.sum(dim=flatten_dims)
+    
+    # Dice score and loss
+    dice_score = (2. * intersection + eps) / (cardinality + eps)
+    dice_loss  = 1. - dice_score
+    
+    # Return average over batch
+    return dice_loss.mean()
+
 def volume_tensor_to_nifti(tensor, path):
     """
     Save a 3D volume tensor to a NIfTI file.
@@ -83,7 +109,7 @@ def vanilla_d_loss(logits_real, logits_fake):
     return d_loss
 
 
-class VQGAN3D(LightningModule):
+class VQGAN3D_Seg(LightningModule):
     def __init__(
         self,
         results_folder: str = None,
@@ -215,14 +241,14 @@ class VQGAN3D(LightningModule):
         B, C, T, H, W = x.shape
         # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
         encodings = self.encoder(x)
-        log.error('Encoding shape:')
-        log.error(encodings.shape)
+        #log.error('Encoding shape:')
+        #log.error(encodings.shape)
         z = self.pre_vq_conv(self.encoder(x))
-        log.error("Z shape:")
-        log.error(z.shape)
+        #log.error("Z shape:")
+        #log.error(z.shape)
         vq_output = self.codebook(z)
-        log.error("VQ output shape:")
-        log.error(vq_output["embeddings"].shape)
+        #log.error("VQ output shape:")
+        #log.error(vq_output["embeddings"].shape)
         x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
         # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
         self.unique_indices.update(
@@ -234,7 +260,7 @@ class VQGAN3D(LightningModule):
         ), f"SHAPE MISMATCH, x_recon.shape: {x_recon.shape}, x.shape: {x.shape}"
         # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}
 
-        recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        #recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
         lc_mask = torch.where(
             torch.logical_and(x.detach() > 1.5, x.detach() < 2.75),
             torch.ones_like(x),
@@ -242,8 +268,11 @@ class VQGAN3D(LightningModule):
         ).float()
         hc_mask = torch.where(
             x.detach() > 2.75, torch.ones_like(x), torch.zeros_like(x).to(x.device)).float()
-        recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
-        recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
+        
+        dice_loss = dice_loss_vol(x, x_recon)
+        #recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
+        #recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
+        recon_loss = dice_loss * self.l1_weight
         # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
 
         # Selects one random 2D image from each 3D Image
@@ -781,8 +810,8 @@ class VQGAN3D(LightningModule):
             volume_path = str(volume_folder / f'{self.global_step}.nii')
 
             #if self.global_step != 0 and self.global_step % self.log_every == 0:
-            log.error(x_recon[0].shape)
-            log.error(volume_path)
+            #log.error(x_recon[0].shape)
+            #log.error(volume_path)
             #assert(1==2)
             volume_tensor_to_nifti(x_recon[0], volume_path)
         commitment_loss = vq_output["commitment_loss"]

@@ -1,4 +1,4 @@
-_target_: src.models.VQGAN3D
+_target_: src.models.VQGAN3D_Seg
 
 embedding_dim: 4 #64 # Needs to be the same as n_hiddens * 2**(downsample-1)
 n_codes: 2048
@@ -23,7 +23,6 @@ discriminator_iter_start: 50000
 disc_loss_type: hinge
 
 log_every: 1
-
 
 image_gan_weight: 1.0
 video_gan_weight: 1.0

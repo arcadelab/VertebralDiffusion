@@ -2,5 +2,5 @@ defaults:
   - default
 
 accelerator: gpu
-devices: 2
-# precision: 16
+devices: 1
+precision: 32

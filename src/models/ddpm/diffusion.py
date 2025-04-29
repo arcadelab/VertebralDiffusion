@@ -27,6 +27,7 @@ from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from src.utils.pylogger import get_pylogger
 from ..vqgan_module import VQGAN3D
+from ..vqgan_seg_module import VQGAN3D_Seg
 
 log = get_pylogger(__name__)
 # helpers functions
@@ -573,14 +574,12 @@ class Unet3D(LightningModule):
 
         for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
             #log.error('spatial mismatch')
-            #test = h.copy()
-            #log.error(len(test))
-            #log.error(test[0].shape)
+            ##test = h.copy()
+            #log.error(len(h))
+            #log.error(h[-1].shape)
+            #log.error('x shape')
+            #log.error(len(x))
             #log.error(x.shape)
-            #log.error(test.pop().shape)
-            #log.error(x.shape)
-            #log.error(h.pop().shape)
-            #log.error(torch.cat((x, h.pop()), dim=1).shape)
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
             x = block2(x, t)
@@ -850,7 +849,8 @@ class GaussianDiffusion(nn.Module):
         return loss
 
     def forward(self, x, *args, **kwargs):
-        if isinstance(self.vqgan, VQGAN3D):
+        if isinstance(self.vqgan, VQGAN3D) or isinstance(self.vqgan, VQGAN3D_Seg):
+            vqgan_flag = True
             with torch.no_grad():
                 x = self.vqgan.encode(
                     x, quantize=False, include_embeddings=True)
@@ -871,13 +871,16 @@ class GaussianDiffusion(nn.Module):
         else:
             log.info("You're doing pixel space diffusion so no need to encode")
             x = normalize_img(x)
-
+        if vqgan_flag:
+            decoded_volume = self.vqgan.decode(x, quantize=True) # use codebook latents
+        else:
+            decoded_volume = None 
         b, device, img_size, = x.shape[0], x.device, self.image_size
         check_shape(x, 'b c f h w', c=self.channels,
                     f=self.num_frames, h=img_size, w=img_size)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
-
-        return self.p_losses(x, t, *args, **kwargs)
+        
+        return self.p_losses(x, t, *args, **kwargs), decoded_volume
 
 # trainer class
 
