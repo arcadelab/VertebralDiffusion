@@ -10,6 +10,8 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import ModelCheckpoint
 from src.utils.pylogger import get_pylogger
 import nibabel as nib
+
+
 #from  .vqgan_module import VQGAN3D # this is the og pixel-space diffusion model 
 
 
@@ -194,7 +196,8 @@ class LatentDiffusionModule(LightningModule):
         """
         assert(1==2)
         return self.diffusion.unet(x, t, cond=cond)
-
+    
+    
     def training_step(self, batch: Any, batch_idx: int) -> torch.Tensor:
         # Retrieve the optimizer.
         opt = self.optimizers()

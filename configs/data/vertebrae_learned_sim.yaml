@@ -1,5 +1,6 @@
 _target_: src.data.NiftiDataModule
-data_dir: ${paths.data_dir}
+vertebrae_dir: ${paths.data_dir}
+whole_CT_dir: ${paths.whole_CT_dir}
 batch_size: 1
 num_workers: 1
 pin_memory: False

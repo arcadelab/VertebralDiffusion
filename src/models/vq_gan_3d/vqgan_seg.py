@@ -121,7 +121,7 @@ class VQGAN_SEG(pl.LightningModule):
         #                                 nn.Linear(self.enc_out_ch*self.enc_out_ch//4, 1), nn.Sigmoid()
         #                                 )
         # self.dice_loss = MulticlassDiceLoss(num_classes=cfg.dataset.seg_channels, softmax_dim=1)
-        seg_weights = get_seg_weights()
+        #seg_weights = get_seg_weights()
         self.dice_loss = DiceLoss(
             include_background=True, softmax=False, squared_pred=True, weight=seg_weights
         )

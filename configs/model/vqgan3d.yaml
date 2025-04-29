@@ -1,11 +1,11 @@
 _target_: src.models.VQGAN3D
 
-embedding_dim: 64 # Needs to be the same as n_hiddens * 2**(downsample-1)
+embedding_dim: 4 #64 # Needs to be the same as n_hiddens * 2**(downsample-1)
 n_codes: 2048
 lr: 3e-4
 # encoder/decoder args
 n_hiddens: 32
-downsample: [2,2,2]
+downsample: [4,4,4] #[2,2,2]
 image_channels: 1
 results_folder: ${hydra:runtime.output_dir}       # Folder to save checkpoints and sample outputs
 norm_type: group
@@ -27,9 +27,11 @@ log_every: 1
 
 image_gan_weight: 1.0
 video_gan_weight: 1.0
-l1_weight: 4.0
+l1_weight: 10.0
 gan_feat_weight: 1.0
 perceptual_weight: 1.0
+lc_weight: 0.0
+hc_weight: 0.0
 
 # Not used
 # i3d_feat: False

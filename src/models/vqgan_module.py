@@ -41,7 +41,7 @@ def volume_tensor_to_nifti(tensor, path):
     
     # Convert the tensor to a NumPy array. If needed, move to CPU.
     np_volume = tensor.cpu().detach().numpy()
-    log.error(np_volume.shape)
+    #log.error(np_volume.shape)
     
     # Create an identity affine. You can change this if you have spatial metadata.
     affine = np.eye(4)
@@ -104,6 +104,8 @@ class VQGAN3D(LightningModule):
         image_gan_weight: float = 1.0,
         video_gan_weight: float = 1.0,
         l1_weight: float = 4.0,
+        lc_weight: float = 0.0,
+        hc_weight: float = 0.0,
         gan_feat_weight: float = 1.0,
         perceptual_weight: float = 1.0,
         # i3d_feat: bool = False,
@@ -148,6 +150,7 @@ class VQGAN3D(LightningModule):
             restart_thres=restart_thres,
         )
 
+        self.unique_indices = set()
         self.gan_feat_weight = gan_feat_weight
         # TODO: Changed batchnorm from sync to normal
         self.image_discriminator = NLayerDiscriminator(
@@ -180,10 +183,16 @@ class VQGAN3D(LightningModule):
         self.perceptual_weight = perceptual_weight
 
         self.l1_weight = l1_weight
+        self.lc_weight = lc_weight
+        self.hc_weight = hc_weight
         self.save_hyperparameters()
 
     def encode(self, x, include_embeddings=False, quantize=True):
-        h = self.pre_vq_conv(self.encoder(x))
+        encoding = self.encoder(x)
+        log.error('Encoding shape:')
+        log.error(encoding.shape)
+        h = self.pre_vq_conv(encoding)
+        log.error(h.shape)
         if quantize:
             vq_output = self.codebook(h)
             if include_embeddings:
@@ -205,11 +214,36 @@ class VQGAN3D(LightningModule):
     def forward_ae(self, x, log_image=False):
         B, C, T, H, W = x.shape
         # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
+        encodings = self.encoder(x)
+        log.error('Encoding shape:')
+        log.error(encodings.shape)
         z = self.pre_vq_conv(self.encoder(x))
+        log.error("Z shape:")
+        log.error(z.shape)
         vq_output = self.codebook(z)
+        log.error("VQ output shape:")
+        log.error(vq_output["embeddings"].shape)
         x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
         # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        self.unique_indices.update(
+            torch.unique(vq_output["encodings"].detach()).tolist()
+        )
+        x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        assert (
+            x_recon.shape == x.shape
+        ), f"SHAPE MISMATCH, x_recon.shape: {x_recon.shape}, x.shape: {x.shape}"
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}
+
         recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        lc_mask = torch.where(
+            torch.logical_and(x.detach() > 1.5, x.detach() < 2.75),
+            torch.ones_like(x),
+            torch.zeros_like(x).to(x.device),
+        ).float()
+        hc_mask = torch.where(
+            x.detach() > 2.75, torch.ones_like(x), torch.zeros_like(x).to(x.device)).float()
+        recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
+        recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
         # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
 
         # Selects one random 2D image from each 3D Image
@@ -353,7 +387,25 @@ class VQGAN3D(LightningModule):
         vq_output = self.codebook(z)
         x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
         # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        self.unique_indices.update(
+        torch.unique(vq_output["encodings"].detach()).tolist()
+        )
+        x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        assert (
+            x_recon.shape == x.shape
+        ), f"SHAPE MISMATCH, x_recon.shape: {x_recon.shape}, x.shape: {x.shape}"
+        # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}
+
         recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        lc_mask = torch.where(
+            torch.logical_and(x.detach() > 1.5, x.detach() < 2.75),
+            torch.ones_like(x),
+            torch.zeros_like(x).to(x.device),
+        ).float()
+        hc_mask = torch.where(
+            x.detach() > 2.75, torch.ones_like(x), torch.zeros_like(x).to(x.device)).float()
+        recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
+        recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
         # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
 
         # Selects one random 2D image from each 3D Image
@@ -442,9 +494,29 @@ class VQGAN3D(LightningModule):
         # print(f"Mean : {torch.mean(x)}, Std : {torch.std(x)}, Max : {torch.max(x)}, Min : {torch.min(x)}")
         z = self.pre_vq_conv(self.encoder(x))
         vq_output = self.codebook(z)
+        self.unique_indices.update(
+            torch.unique(vq_output["encodings"].detach()).tolist()
+        )
         x_recon = self.decoder(self.post_vq_conv(vq_output["embeddings"]))
+        assert (
+            x_recon.shape == x.shape
+        ), f"SHAPE MISMATCH, x_recon.shape: {x_recon.shape}, x.shape: {x.shape}"
         # print(f"Recon: Mean: {torch.mean(x_recon)}, Std : {torch.std(x_recon)}, Max : {torch.max(x_recon)}, Min : {torch.min(x_recon)}")
+        
         recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
+        lc_mask = torch.where(
+            torch.logical_and(x.detach() > 1.5, x.detach() < 2.75),
+            torch.ones_like(x),
+            torch.zeros_like(x).to(x.device),
+        ).float()
+        hc_mask = torch.where(
+            x.detach() > 2.75, torch.ones_like(x), torch.zeros_like(x).to(x.device)
+        ).float()
+        recon_loss += F.l1_loss(x_recon * lc_mask, x * lc_mask) * self.lc_weight
+        recon_loss += F.l1_loss(x_recon * hc_mask, x * hc_mask) * self.hc_weight
+
+
+        #recon_loss = F.l1_loss(x_recon, x) * self.l1_weight
         # print(f"L1 weight: {self.l1_weight}, L1 loss: {recon_loss}")
 
         # Selects one random 2D image from each 3D Image

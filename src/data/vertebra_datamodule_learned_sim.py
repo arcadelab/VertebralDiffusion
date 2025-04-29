@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 import os
 from glob import glob
+from collections import defaultdict
 from pathlib import Path 
 import random
 import torchio as tio
@@ -34,7 +35,7 @@ log = get_pylogger(__name__)
 
 class NiftiDataset(Dataset):
     """A simple Dataset for loading NIfTI images from a directory."""
-    def __init__(self, data_files: list, dim: int, train: bool = False) -> None:
+    def __init__(self, data_files: dict, dim: int, train: bool = False) -> None:
         """
         Args:
             data_dir (str): Path to directory containing NIfTI files.
@@ -43,7 +44,14 @@ class NiftiDataset(Dataset):
         self.dim = dim
         self.train = train
         # Find files with .nii or .nii.gz extension.
-        self.nifti_files = data_files
+        pairs = []
+        for ct_path, vert_list in data_files.items():
+            # vert_list is something like [v1, v2, v3…]
+            for vert_path in vert_list:
+                # for each vertebra v1, v2, … make a tuple (vert_path, ct_path)
+                pairs.append((vert_path, ct_path))
+        self.pairs = pairs
+        #self.nifti_files = data_files
         if not self.nifti_files:
             raise ValueError(f"No NIfTI files found in {data_files}")
 
@@ -78,34 +86,30 @@ class NiftiDataset(Dataset):
     
 
     def __getitem__(self, index: int) -> torch.Tensor:
-        file_path = self.nifti_files[index]
+        vert_path, ct_path = self.pairs[index]
         # Load the image using nibabel
-        img_nib = nib.load(file_path)
+        img_nib = nib.load(vert_path)
         img = img_nib.get_fdata()
+        whole_CT_nib = nib.load(ct_path)
+        whole_CT = whole_CT_nib.get_fdata()
         train_aug, val_aug = self.data_aug() # reinstantiates the rotation every single time get item is called 
         # Convert the image to a torch tensor
         img = torch.tensor(img, dtype=torch.float32)
         img = img.clone().detach().to(torch.float32).unsqueeze(0)
+
+        # Convert the image to a torch tensor
+        whole_CT = torch.tensor(whole_CT, dtype=torch.float32)
+        whole_CT = whole_CT.clone().detach().to(torch.float32).unsqueeze(0)
+
         if self.train:
             img = train_aug(img)
         else:
             img = val_aug(img)
-        #img = resize(img)
-        #img = pad_transform(img) #resize(img)#pad_transform(img)
-        #print(img.shape)
 
-        #augmented_img_np = img.squeeze(0).numpy()  # remove channel dim for saving
-        #augmented_img_nib = nib.Nifti1Image(augmented_img_np, affine=img_nib.affine)
-
-        # Define save path
-        #augmented_path = Path(file_path).with_name(Path(file_path).stem + '_augmented.nii')
-        #log.error(augmented_path)
-        #nib.save(augmented_img_nib, augmented_path)
-
-        #training pipeline expects a 4d tensor so don't need to squeeze it 
-        #img = img.squeeze(0)
-        #log.error(img.shape)
-        return img
+        return {
+            "vertebrae"       : img,      
+            "whole_ct_volume" : whole_CT        
+        }
 
 
 class NiftiDataModule(LightningDataModule):
@@ -142,35 +146,68 @@ class NiftiDataModule(LightningDataModule):
         # Convert the data directory to a Path object.
         #print(Path(self.hparams.data_dir))
         data_dir = Path(str(self.hparams.data_dir))
+        CT_dir = Path(str(self.hparams.whole_CT_dir))
         
         # Find all NIfTI files (supporting both .nii and .nii.gz extensions).
         nifti_files = sorted(list(data_dir.rglob("*.nii")) + list(data_dir.rglob("*.nii.gz")))
+        whole_CT_files = sorted(list(CT_dir.rglob("*.nii")) + list(CT_dir.rglob("*.nii.gz")))
         nifti_files = sorted([f for f in nifti_files if self.level in f.name])
+
+        # 1) map each case-ID to its whole CT
+        ct_by_case = {
+            ct.relative_to(CT_dir).parts[0]: ct
+            for ct in whole_CT_files
+        }
+        verts_by_case = defaultdict(list)
+        for v in nifti_files:
+            case_id = v.relative_to(data_dir).parts[0]
+            verts_by_case[case_id].append(v)
+        ct_to_verts = {}
+        for case_id, verts in verts_by_case.items():
+            ct = ct_by_case.get(case_id)
+            if ct:
+                ct_to_verts[ct] = verts
+            else:
+                log.error(f"CT not found for case ID {case_id}.")
         #log.error(nifti_files)
         #log.error(self.level)
         if not nifti_files:
             raise FileNotFoundError(f"No NIfTI files found in {data_dir}")
         
         # Shuffle the file list to ensure randomness.
-        random.shuffle(nifti_files)
-        n = len(nifti_files)
-        train_count = int(0.9 * n)
-        val_count = int(0.1 * n)
+        #random.shuffle(nifti_files)
+        #n = len(nifti_files)
+        #train_count = int(0.9 * n)
+        #val_count = int(0.1 * n)
         #log.error(train_count)
         #log.debug(val_count)
         #log.error(val_count)
         #log.error(train_count)
         # The test set will be the remainder.
+
+        all_cts = list(ct_to_verts.keys())
+        random.shuffle(all_cts)
+        n = len(all_cts)
+        n_train = int(0.8 * n)
+        n_val   = int(0.1 * n)
+
+        train_cts = all_cts[:n_train]
+        val_cts   = all_cts[n_train:n_train+n_val]
+        test_cts  = all_cts[n_train+n_val:]
+
+        train_pairs = { ct: ct_to_verts[ct] for ct in train_cts }
+        val_pairs   = { ct: ct_to_verts[ct] for ct in val_cts   }
+        test_pairs  = { ct: ct_to_verts[ct] for ct in test_cts  }
         
         if stage is None or stage == "fit":
-            train_files = nifti_files[:train_count]
-            val_files = nifti_files[train_count:train_count + val_count]
-            self.data_train = NiftiDataset(train_files, self.dim, train=True)
-            self.data_val = NiftiDataset(val_files, self.dim, train=False)
+            #train_files = nifti_files[:train_count]
+            #val_files = nifti_files[train_count:train_count + val_count]
+            self.data_train = NiftiDataset(train_pairs, self.dim, train=True)
+            self.data_val = NiftiDataset(val_pairs, self.dim, train=False)
         
         if stage is None or stage == "test":
-            test_files = nifti_files[train_count + val_count:]
-            self.data_test = NiftiDataset(test_files, self.dim, train=False)
+            #test_files = nifti_files[train_count + val_count:]
+            self.data_test = NiftiDataset(test_pairs, self.dim, train=False)
 
     def train_dataloader(self) -> DataLoader[Any]:
         return DataLoader(

@@ -205,7 +205,6 @@ class Block(nn.Module):
     def __init__(self, dim, dim_out, groups=8):
         super().__init__()
         self.proj = nn.Conv3d(dim, dim_out, (1, 3, 3), padding=(0, 1, 1))
-
         self.norm = nn.GroupNorm(groups, dim_out)
         self.act = nn.SiLU()
 
@@ -222,7 +221,6 @@ class Block(nn.Module):
 
 class ResnetBlock(nn.Module):
     def __init__(self, dim, dim_out, *, time_emb_dim=None, groups=8):
-        groups = 6
         super().__init__()
         self.mlp = nn.Sequential(
             nn.SiLU(),
@@ -562,8 +560,8 @@ class Unet3D(LightningModule):
             x = spatial_attn(x)
             x = temporal_attn(x, pos_bias=time_rel_pos_bias,
                               focus_present_mask=focus_present_mask)
-            log.error('appending to h')
-            log.error(x.shape)
+            #log.error('appending to h')
+            #log.error(x.shape)
             h.append(x)
             x = downsample(x)
 
@@ -574,12 +572,12 @@ class Unet3D(LightningModule):
         x = self.mid_block2(x, t)
 
         for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
-            log.error('spatial mismatch')
-            test = h.copy()
-            log.error(len(test))
-            log.error(test[0].shape)
-            log.error(x.shape)
-            log.error(test.pop().shape)
+            #log.error('spatial mismatch')
+            #test = h.copy()
+            #log.error(len(test))
+            #log.error(test[0].shape)
+            #log.error(x.shape)
+            #log.error(test.pop().shape)
             #log.error(x.shape)
             #log.error(h.pop().shape)
             #log.error(torch.cat((x, h.pop()), dim=1).shape)
@@ -631,13 +629,17 @@ class GaussianDiffusion(nn.Module):
         use_dynamic_thres=False,  # from the Imagen paper
         dynamic_thres_percentile=0.9,
         vqgan_ckpt=None,
+        cache_dir=None,
     ):
         super().__init__()
         self.channels = channels
         self.image_size = image_size
         self.num_frames = num_frames
         self.denoise_fn = denoise_fn
-        
+        if not isinstance(cache_dir, Path):
+            cache_dir = Path(cache_dir)
+        self.cache_dir = cache_dir
+        self.cache_counter = 0
         # we're not training a vq-gan for now - Now we are 04/15
         if vqgan_ckpt:
             self.vqgan = VQGAN3D.load_from_checkpoint(vqgan_ckpt).cuda()
@@ -852,11 +854,20 @@ class GaussianDiffusion(nn.Module):
             with torch.no_grad():
                 x = self.vqgan.encode(
                     x, quantize=False, include_embeddings=True)
-                log.error(x.shape)
+                #log.error(x.shape)
                 # normalize to -1 and 1
                 x = ((x - self.vqgan.codebook.embeddings.min()) /
                      (self.vqgan.codebook.embeddings.max() -
                       self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
+            
+                #if self.cache_dir != None:
+                #    try:
+                #        filename = f"encoded_vector_{self.cache_counter}.pt"
+                #        torch.save(x.cpu(), self.cache_dir / filename) 
+                #        self.cache_counter += 1
+                #    except Exception as e:
+                #        log.error(f"Error saving cache file {self.cache_dir}: {e}")
+
         else:
             log.info("You're doing pixel space diffusion so no need to encode")
             x = normalize_img(x)
