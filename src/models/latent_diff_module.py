@@ -198,6 +198,11 @@ class LatentDiffusionModule(LightningModule):
     def training_step(self, batch: Any) -> torch.Tensor:
         # Retrieve the optimizer.
         opt = self.optimizers()
+        current_lr = opt.param_groups[0]['lr']
+        
+        # Log the learning rate: log on every step and show it in the progress bar.
+        self.log("lr", current_lr, on_step=True, on_epoch=False, prog_bar=True)
+        
         # Assume 'batch' is already on the correct device.
         with autocast(enabled=self.amp):
             #log.error(batch[0].shape)
@@ -245,12 +250,12 @@ class LatentDiffusionModule(LightningModule):
         return loss
     def validation_step(self, batch: Any) -> torch.Tensor:
         #log.error(batch[0].shape)
-        loss = self.diffusion(batch)
+        loss, _ = self.diffusion(batch)
         self.log("val/loss", loss, prog_bar=True)
         return loss
 
     def test_step(self, batch: Any) -> torch.Tensor:
-        loss = self.diffusion(batch)
+        loss, _ = self.diffusion(batch)
         self.log("test/loss", loss, prog_bar=True)
         return loss
         

@@ -827,13 +827,13 @@ class VQGAN3D_Seg(LightningModule):
         
         #print(f"Batch idx: {batch_idx}")
         #print(batch.shape)
-        x = batch#["data"]  # TODO: batch['stft']
+        x = batch#["data"]  
         recon_loss, x_recon, vq_output, _, perceptual_loss, _ = self.forward_ae(x)
         volume_folder = self.results_folder / 'volumes'
         volume_folder.mkdir(parents=True, exist_ok=True)
         volume_path = str(volume_folder / f'{self.global_step}.nii')
         #if self.global_step != 0 and self.global_step % self.log_every == 0:
-        #    volume_tensor_to_nifti(x_recon[0], volume_path)
+        volume_tensor_to_nifti(x_recon[0], volume_path)
         self.log("test/recon_loss", recon_loss, prog_bar=True)
         self.log("test/perceptual_loss", perceptual_loss, prog_bar=True)
         self.log("test/perplexity", vq_output["perplexity"], prog_bar=True)

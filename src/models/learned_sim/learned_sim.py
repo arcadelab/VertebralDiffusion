@@ -15,6 +15,7 @@ def whole_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch.Ten
     Returns:
         torch.Tensor: 2D DRR tensor.
     """
+    # TODO: diffdrr projection of the vert patch, encode the proj using DiffDRR arguments.
     pass
 
 # TO BE DONE BY RIDA
@@ -28,7 +29,7 @@ def vertebral_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch
     Returns:
         torch.Tensor: 2D DRR tensor.
     """
-    pass
+    # Same as above, but for the diffusion volume
 
 
 _SOBEL_X = torch.tensor([[[[-1, 0, 1],
