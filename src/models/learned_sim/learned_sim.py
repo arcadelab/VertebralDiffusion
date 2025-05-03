@@ -4,9 +4,21 @@ import killeengeo as geo
 import torch
 import torch.nn.functional as F
 import numpy as np
+import nibabel as nib
+import torchio as tio
+from diffdrr.drr import DRR
+from diffdrr.data import read
+import matplotlib.pyplot as plt
+import pathlib
+from src.utils.pylogger import get_pylogger
+
+log = get_pylogger(__name__)
+
+#torch.autograd.set_detect_anomaly(True)
+#TODO: I need to add the camera projection to all fxns
 
 # TO BE DONE BY ERIC (WHY DOES THIS NEED TO BE DONE BY DEEPDRR?)
-def whole_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch.Tensor:
+def whole_volume_to_drr(x: torch.Tensor) -> torch.Tensor:
     """
     Creates a DRR from a 3D volume using the camera projection.
     Args:
@@ -15,11 +27,27 @@ def whole_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch.Ten
     Returns:
         torch.Tensor: 2D DRR tensor.
     """
+    #x = x.unsqueeze(0) # 3d to 4d
     # TODO: diffdrr projection of the vert patch, encode the proj using DiffDRR arguments.
-    pass
+    torchio_img = tio.ScalarImage(tensor=x) # yeah i probably shouldn't use an identity matrix
+    # but this is just a placeholder for now
+    torchio_subject = tio.Subject(volume=torchio_img)
+    diffdrr_subject = read(torchio_subject['volume'])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    drr = DRR(
+        diffdrr_subject,
+        sdd=1020,
+        height=200,
+        delx=2.0,
+    ).to(device)
+    # Example params for now
+    rotations = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32, device=device)
+    translations = torch.tensor([[0.0, 850.0, 0.0]], dtype=torch.float32, device=device)
+    img = drr(rotations, translations, parameterization="euler_angles", convention="ZXY")
+    return img[0, 0, :, :] # tensor of shape (1, 1, 200, 200) -> (200, 200) for the DRR image
 
 # TO BE DONE BY RIDA
-def vertebral_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch.Tensor:
+def vertebral_volume_to_drr(x: torch.Tensor) -> torch.Tensor:
     #NEEDS TO BE DIFFERENTIABLE FOR BACKPROP (Need to test for this)
     """
     Creates a DRR from a 3D volume using the camera projection.
@@ -29,8 +57,48 @@ def vertebral_volume_to_drr(x: torch.Tensor, proj:geo.CameraProjection) -> torch
     Returns:
         torch.Tensor: 2D DRR tensor.
     """
+    #x = x.unsqueeze(0) # 3d to 4d  
     # Same as above, but for the diffusion volume
+    torchio_img = tio.ScalarImage(tensor=x) # yeah i probably shouldn't use an identity matrix
+    # but this is just a placeholder for now
+    torchio_subject = tio.Subject(volume=torchio_img)
+    diffdrr_subject = read(torchio_subject['volume'])
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    drr = DRR(
+        diffdrr_subject,
+        sdd=1020,
+        height=200,
+        delx=2.0,
+    ).to(device)
+    # Example params for now
+    rotations = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32, device=device)
+    translations = torch.tensor([[0.0, 850.0, 0.0]], dtype=torch.float32, device=device)
+    img = drr(rotations, translations, parameterization="euler_angles", convention="ZXY")
+    return img # tensor of shape (1, 1, 200, 200) -> (200, 200) for the DRR image
 
+def whole_volume_to_drr_batch(x: torch.Tensor) -> torch.Tensor:
+    """
+    x: (B, C, D, H, W) or (B, D, H, W)
+    returns: (B, 1, H_drr, W_drr)  – a batched DRR volume
+    """
+    drrs = []
+    for i in range(x.shape[0]):
+        sample = x[i]
+        log.error(f"whole_volume_to_drr_batch: {sample.shape}")
+        drri = whole_volume_to_drr(sample)    # 3D
+        drrs.append(drri)
+    drrs = torch.stack(drrs, dim=0)           # (B, H_drr, W_drr)
+    drrs = drrs.squeeze(2)
+    return drrs.squeeze(1)                 # (B, 1, H_drr, W_drr)
+
+def vertebral_volume_to_drr_batch(x: torch.Tensor) -> torch.Tensor:
+    drrs = []
+    for i in range(x.shape[0]):
+        sample = x[i]
+        drrs.append(vertebral_volume_to_drr(sample))
+    drrs = torch.stack(drrs, dim=0)
+    drrs = drrs.squeeze(2)
+    return drrs.squeeze(1)   
 
 _SOBEL_X = torch.tensor([[[[-1, 0, 1],
                            [-2, 0, 2],
@@ -91,7 +159,6 @@ def ncc_2d(X, Y):
 def grad_ncc_loss(
     vol_whole: torch.Tensor,     
     vol_vertebra: torch.Tensor,   
-    proj: geo.CameraProjection,
     ksize: int = 3,
 ) -> torch.Tensor:
     """
@@ -99,14 +166,61 @@ def grad_ncc_loss(
     Everything stays on GPU.
     """
     # 1) DRRs
-    with torch.no_grad():
-        drr_whole = whole_volume_to_drr(vol_whole, proj)       
-    drr_vert = vertebral_volume_to_drr(vol_vertebra, proj)    # idk if we need to make this differentiable
+    #with torch.no_grad():
+    #    drr_whole = whole_volume_to_drr(vol_whole)       
+    #drr_vert = vertebral_volume_to_drr(vol_vertebra)    # idk if we need to make this differentiable
     # it also might be a bad idea to generate thse on the fly 
+    log.error(f"vol_whole: {vol_whole.shape}") 
+    log.error(f"vol_vertebra: {vol_vertebra.shape}")
+    drr_whole = whole_volume_to_drr_batch(vol_whole.detach())
+    drr_vert  = vertebral_volume_to_drr_batch(vol_vertebra) # shouldn't do but testing
+    log.error(drr_vert.shape)
+    log.error(drr_whole.shape)
 
+    save_and_plot_batch(drr_whole, "g_whole")
+    save_and_plot_batch(drr_vert,  "g_vert")
     #get grads 
+    #img = torch.rand(1, 200, 200) 
+    #img_2 = torch.rand(1, 200, 200) #ok so these work which the problem is in not in DRR generation or in gradient calculation
     g_whole = sobel_grad(drr_whole, method="magnitude")
     g_vert  = sobel_grad(drr_vert,  method="magnitude")
 
     ncc = ncc_2d(g_whole, g_vert)
-    return (1 - ncc) / 2 # [0, 1]
+    #loss = (drr_whole + drr_vert)/2
+    #loss = (g_whole + g_vert)
+    #loss = loss.mean()
+    #loss = vol_vertebra.mean() + drr_vert.mean()
+    #return loss
+    #log.error(f"grad_ncc_loss: {ncc}")
+    #log.error(drr_vert.shape)
+    #return 0.5
+    return ((1 - ncc) / 2).mean() # [0, 1]
+
+
+def save_and_plot_batch(t, tag, out_dir="drr_debug", show_first=2):
+    """
+    t        : (B,1,H,W) or (B,H,W) torch tensor on any device
+    tag      : "whole", "vert", "g_whole", ...
+    out_dir  : folder is created if it does not exist
+    show_first : how many of the batch to display inline (set 0 to skip)
+    """
+    t = t.detach().cpu()
+    if t.ndim == 4:                       # (B,1,H,W) -> (B,H,W)
+        t = t[:,0]
+
+    out_dir = pathlib.Path(out_dir)
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    for i, img in enumerate(t):
+        img = img.float()
+        img = (img - img.min()) / (img.max() - img.min() + 1e-6)   # [0,1]
+        fn = out_dir / f"{tag}_{i:03d}.png"
+        plt.imsave(fn, img.numpy(), cmap="gray")
+        if i < show_first:
+            plt.figure(figsize=(3,3))
+            plt.imshow(img.numpy(), cmap="gray", vmin=0, vmax=1)
+            plt.title(f"{tag} #{i}")
+            plt.axis("off")
+
+    if show_first:
+        plt.show()

@@ -1,1 +1,1 @@
-from learned_sim import *
+from .learned_sim import *
