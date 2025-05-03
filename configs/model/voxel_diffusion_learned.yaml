@@ -1,4 +1,4 @@
-_target_: src.models.DiffusionModule
+_target_: src.models.VoxelDiffusionLearnedModule
 
 ema_decay: 0.995                  # EMA decay factor
 #train_lr: 1e-4                    # Learning rate for training
@@ -27,8 +27,8 @@ diffusion:
   timesteps: 300                   # Total number of diffusion steps
   loss_type: "l1"                   # Type of loss ("l1" or "l2")
   channels: 1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
-  vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
-
+  vqgan_ckpt: null                 # Optional: path to a VQGAN checkpoint (if not used, set to null)
+  cache_dir: null
 
 optimizer:
   _target_: torch.optim.AdamW

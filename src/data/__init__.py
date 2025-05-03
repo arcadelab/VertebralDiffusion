@@ -1,1 +1,2 @@
 from .vertebra_datamodule import NiftiDataModule
+from .vertebra_datamodule_learned import NiftiDataModuleVertAndCT

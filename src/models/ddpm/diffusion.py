@@ -635,7 +635,7 @@ class GaussianDiffusion(nn.Module):
         self.image_size = image_size
         self.num_frames = num_frames
         self.denoise_fn = denoise_fn
-        if not isinstance(cache_dir, Path):
+        if not isinstance(cache_dir, Path) and cache_dir is not None:
             cache_dir = Path(cache_dir)
         self.cache_dir = cache_dir
         self.cache_counter = 0
@@ -846,9 +846,10 @@ class GaussianDiffusion(nn.Module):
         else:
             raise NotImplementedError()
 
-        return loss
+        return loss, x_recon
 
     def forward(self, x, *args, **kwargs):
+        vqgan_flag = False
         if isinstance(self.vqgan, VQGAN3D) or isinstance(self.vqgan, VQGAN3D_Seg):
             vqgan_flag = True
             with torch.no_grad():
@@ -869,18 +870,25 @@ class GaussianDiffusion(nn.Module):
                 #        log.error(f"Error saving cache file {self.cache_dir}: {e}")
 
         else:
-            log.info("You're doing pixel space diffusion so no need to encode")
+            #log.info("You're doing pixel space diffusion so no need to encode")
             x = normalize_img(x)
-        if vqgan_flag:
-            decoded_volume = self.vqgan.decode(x, quantize=True) # use codebook latents
-        else:
-            decoded_volume = None 
+        #if vqgan_flag:
+        #    decoded_volume = self.vqgan.decode(x, quantize=True) # use codebook latents
+        #    # u just are decoding the encoded volume which isn't what you want 
+        #else:
+        #    decoded_volume = None 
         b, device, img_size, = x.shape[0], x.device, self.image_size
         check_shape(x, 'b c f h w', c=self.channels,
                     f=self.num_frames, h=img_size, w=img_size)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
+        loss, decoded_volume = self.p_losses(x, t, *args, **kwargs)
+        if vqgan_flag:
+            log.error(f"decoded volume shape: {decoded_volume.shape}")
+            decoded_volume = self.vqgan.decode(decoded_volume, quantize=True) # use codebook latents
+            # we want this here because the denoised volume is in latent space with the vqgan
+            log.info(f"decoded volume shape: {decoded_volume.shape}")
         
-        return self.p_losses(x, t, *args, **kwargs), decoded_volume
+        return loss, decoded_volume
 
 # trainer class
 

@@ -52,11 +52,11 @@ class NiftiDataset(Dataset):
                 pairs.append((vert_path, ct_path))
         self.pairs = pairs
         #self.nifti_files = data_files
-        if not self.nifti_files:
+        if not self.pairs:
             raise ValueError(f"No NIfTI files found in {data_files}")
 
     def __len__(self) -> int:
-        return len(self.nifti_files)
+        return len(self.pairs)
 
     def data_aug(self):
         rotation = RandomUniformRotation()
@@ -89,7 +89,9 @@ class NiftiDataset(Dataset):
         vert_path, ct_path = self.pairs[index]
         # Load the image using nibabel
         img_nib = nib.load(vert_path)
+        #log.error(vert_path)
         img = img_nib.get_fdata()
+        #log.error(ct_path)
         whole_CT_nib = nib.load(ct_path)
         whole_CT = whole_CT_nib.get_fdata()
         train_aug, val_aug = self.data_aug() # reinstantiates the rotation every single time get item is called 
@@ -105,18 +107,20 @@ class NiftiDataset(Dataset):
             img = train_aug(img)
         else:
             img = val_aug(img)
-
+       #log.error(img.shape)
+        #log.error(whole_CT.shape)
         return {
             "vertebrae": img,      
             "whole_CT" : whole_CT        
         }
 
 
-class NiftiDataModule(LightningDataModule):
+class NiftiDataModuleVertAndCT(LightningDataModule):
     """A barebones LightningDataModule for loading NIfTI images."""
     def __init__(
         self,
-        data_dir: str = "data/nifti/",
+        vertebrae_dir: str = "data/nifti/",
+        whole_CT_dir: str = "data/whole_CT/",
         train_val_test_split: Tuple[int, int, int] = (70, 10, 20),
         batch_size: int = 4,
         dim: int = 128, 
@@ -145,7 +149,7 @@ class NiftiDataModule(LightningDataModule):
         """
         # Convert the data directory to a Path object.
         #print(Path(self.hparams.data_dir))
-        data_dir = Path(str(self.hparams.data_dir))
+        data_dir = Path(str(self.hparams.vertebrae_dir))
         CT_dir = Path(str(self.hparams.whole_CT_dir))
         
         # Find all NIfTI files (supporting both .nii and .nii.gz extensions).
@@ -162,8 +166,13 @@ class NiftiDataModule(LightningDataModule):
         for v in nifti_files:
             case_id = v.relative_to(data_dir).parts[0]
             verts_by_case[case_id].append(v)
+        #log.error(list(verts_by_case.keys())[0])
+        #log.error(list(ct_by_case.keys())[0])
+        #assert(1==2), len(set(verts_by_case.keys()).intersection(set(ct_by_case.keys())))
         ct_to_verts = {}
         for case_id, verts in verts_by_case.items():
+            #log.error(case_id)
+            #log.error(verts)
             ct = ct_by_case.get(case_id)
             if ct:
                 ct_to_verts[ct] = verts
@@ -247,5 +256,5 @@ class NiftiDataModule(LightningDataModule):
 
 
 if __name__ == "__main__":
-    _ = NiftiDataModule()
+    _ = NiftiDataModuleVertAndCT()
 

@@ -10,6 +10,10 @@ from lightning import LightningModule
 from lightning.pytorch.callbacks import ModelCheckpoint
 from src.utils.pylogger import get_pylogger
 import nibabel as nib
+from .learned_sim import *
+import os 
+#torch.autograd.set_detect_anomaly(True)
+#os.environ["TORCH_ALLOW_TF32"] = "0"
 #from  .vqgan_module import VQGAN3D # this is the og pixel-space diffusion model 
 
 
@@ -67,7 +71,7 @@ class EMA():
         return old * self.beta + (1 - self.beta) * new
     
 
-class DiffusionModule(LightningModule):
+class VoxelDiffusionLearnedModule(LightningModule):
     """LighningModule for training a SWIN module.
 
     A LightningModule organizes your PyTorch code into 6 sections:
@@ -97,8 +101,8 @@ class DiffusionModule(LightningModule):
         optimizer: list[torch.optim.Optimizer],
         lr_scheduler: torch.optim.lr_scheduler,
         batch_size: int,
-        cache_dir: Optional[str] = None,
-        cache_threshold: int = 20000, # User-specified threshold for num of cache vectors
+        #cache_dir: Optional[str] = None,
+        #cache_threshold: int = 20000, # User-specified threshold for num of cache vectors
     ):
         """
         Args:
@@ -147,20 +151,6 @@ class DiffusionModule(LightningModule):
         # Initialize a training step counter.
         self.step = 0
 
-        #implement caching for better computational efficiency
-
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.cache_threshold = cache_threshold
-        self._cached_vectors_count = 0 # To track how many vectors are cached
-        self._only_read_cache = False # Flag to switch mode
-        if self.cache_dir:
-            self.cache_dir.mkdir(exist_ok=True, parents=True)
-            # Optional: Count existing files on startup
-            if self.cache_dir.exists():
-                 # A more robust check might parse filenames if they contain identifiers
-                 self._cached_vectors_count = len(list(self.cache_dir.glob('*.pt'))) # Assuming .pt files
-
-
     #def configure_callbacks(self, ckpt_folder):
     #    checkpoint_callback = ModelCheckpoint(
     #    dirpath=ckpt_folder,
@@ -194,32 +184,30 @@ class DiffusionModule(LightningModule):
         """
         assert(1==2)
         return self.diffusion.unet(x, t, cond=cond)
-
+    
+    
     def training_step(self, batch: Any) -> torch.Tensor:
         # Retrieve the optimizer.
         opt = self.optimizers()
-        current_lr = opt.param_groups[0]['lr']
-        
-        # Log the learning rate: log on every step and show it in the progress bar.
-        self.log("lr", current_lr, on_step=True, on_epoch=False, prog_bar=True)
-        
         # Assume 'batch' is already on the correct device.
+        whole_CT = batch["whole_CT"]
         with autocast(enabled=self.amp):
-            #log.error(batch[0].shape)
-            loss, _ = self.diffusion(batch)
+            #log.error(batch['vertebrae'].shape)
+            loss, decoded_volume = self.diffusion(batch["vertebrae"])
+            DRR_loss = grad_ncc_loss(vol_whole = whole_CT, vol_vertebra = decoded_volume, results_folder=self.results_folder, step = self.step)
+            loss = loss + DRR_loss # I think so at least we'll have to check 
+
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
-        #log.info(f"Step {self.step}, Global Step {self.global_step}")
+
         if (self.step + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
             if self.max_grad_norm is not None:
                 self.scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(self.diffusion.parameters(), self.max_grad_norm)
-            #log.error("stepping")
             self.scaler.step(opt)
             self.scaler.update()
             opt.zero_grad()
-            self.lr_schedulers().step()
             
             # IN orig code, EMA model only updates after grad_accum is done but here I can't do that so i only execute
             # after the grad has accumulated`
@@ -246,19 +234,27 @@ class DiffusionModule(LightningModule):
             volume_tensor_to_nifti(all_videos_list, volume_path)
             ckpt_folder = self.results_folder / 'checkpoints'
             self.ema_model.train() # sets back to train model 
-
+        self.log('train/ncc_loss', DRR_loss, prog_bar=True)
         self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)
         self.step += 1
         return loss
-    
+
     def validation_step(self, batch: Any) -> torch.Tensor:
         #log.error(batch[0].shape)
-        loss, _ = self.diffusion(batch)
+        whole_CT = batch["whole_CT"]
+        loss, decoded_volume = self.diffusion(batch["vertebrae"])
+        DRR_loss = grad_ncc_loss(vol_whole = whole_CT, vol_vertebra = decoded_volume)
+        loss = loss + DRR_loss # I think so at least we'll have to check 
+        self.log('val/ncc_loss', DRR_loss, prog_bar=True)
         self.log("val/loss", loss, prog_bar=True)
         return loss
 
     def test_step(self, batch: Any) -> torch.Tensor:
-        loss, _ = self.diffusion(batch)
+        whole_CT = batch["whole_CT"]
+        loss, decoded_volume = self.diffusion(batch["vertebrae"])
+        DRR_loss = grad_ncc_loss(vol_whole = whole_CT, vol_vertebra = decoded_volume)
+        loss = loss + DRR_loss # I think so at least we'll have to check 
+        self.log('test/ncc_loss', DRR_loss, prog_bar=True)
         self.log("test/loss", loss, prog_bar=True)
         return loss
         

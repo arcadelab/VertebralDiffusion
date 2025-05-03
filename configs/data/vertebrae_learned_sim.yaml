@@ -1,7 +1,6 @@
-_target_: src.data.NiftiDataModule
+_target_: src.data.NiftiDataModuleVertAndCT
 vertebrae_dir: ${paths.data_dir}
 whole_CT_dir: ${paths.whole_CT_dir}
-seg_dir: ${paths.seg_dir}
 batch_size: 1
 num_workers: 1
 pin_memory: False

@@ -210,14 +210,16 @@ class LatentDiffusionModule(LightningModule):
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
-
+        #log.info(f"Step {self.step}, Global Step {self.global_step}")
         if (self.step + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
             if self.max_grad_norm is not None:
                 self.scaler.unscale_(opt)
                 nn.utils.clip_grad_norm_(self.diffusion.parameters(), self.max_grad_norm)
+            #log.error("stepping")
             self.scaler.step(opt)
             self.scaler.update()
             opt.zero_grad()
+            self.lr_schedulers().step()
             
             # IN orig code, EMA model only updates after grad_accum is done but here I can't do that so i only execute
             # after the grad has accumulated`
