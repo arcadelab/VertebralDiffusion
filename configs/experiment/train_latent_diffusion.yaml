@@ -34,6 +34,6 @@ callbacks:
 logger:
   wandb:
     tags: ${tags}
-    group: "diffusion"
+    group: "latent_diffusion"
   aim:
-    experiment: "train_diffusion"
+    experiment: "train_latent_diffusion"

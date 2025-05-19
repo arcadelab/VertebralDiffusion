@@ -4,7 +4,7 @@ batch_size: 1
 num_workers: 1
 pin_memory: False
 dim: 56 #56
-level: "T"
+level: "L"
 #image_size: [128, 128, 128] #these are 3d volumes
 
 

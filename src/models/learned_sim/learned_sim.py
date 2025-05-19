@@ -37,7 +37,7 @@ def whole_volume_to_drr(x: torch.Tensor) -> torch.Tensor:
     ).to(device)
     # Example params for now
     rotations = torch.tensor([[0.0, 0.0, 0.0]], dtype=torch.float32, device=device)
-    translations = torch.tensor([[0.0, 550.0, -20.0]], dtype=torch.float32, device=device)
+    translations = torch.tensor([[0.0, 600.0, -10.0]], dtype=torch.float32, device=device)
     img = drr(rotations, translations, parameterization="euler_angles", convention="ZXY")
     return img[0, 0, :, :] # tensor of shape (1, 1, 200, 200) -> (200, 200) for the DRR image
 

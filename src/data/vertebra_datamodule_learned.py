@@ -197,7 +197,7 @@ class NiftiDataModuleVertAndCT(LightningDataModule):
         all_cts = list(ct_to_verts.keys())
         random.shuffle(all_cts)
         n = len(all_cts)
-        n_train = int(0.8 * n)
+        n_train = 5 #int(0.8 * n) 
         n_val   = int(0.1 * n)
 
         train_cts = all_cts[:n_train]

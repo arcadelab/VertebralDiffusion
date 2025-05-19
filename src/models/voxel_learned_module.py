@@ -94,6 +94,8 @@ class VoxelDiffusionLearnedModule(LightningModule):
         step_start_ema: int,
         save_and_sample_every: int,
         gradient_accumulate_every: int,
+        diff_weight: float,
+        DRR_weight: float,
         max_grad_norm: float,
         num_sample_rows: int,
         results_folder: str,
@@ -123,6 +125,8 @@ class VoxelDiffusionLearnedModule(LightningModule):
         super().__init__()
         # Save hyperparameters (except objects that don't need saving)
         self.save_hyperparameters()
+        self.diffusion_weight = diff_weight
+        self.DRR_weight = DRR_weight
         self.diffusion = diffusion
         self.diffusion.denoise_fn = unet3d
         self.ema_decay = ema_decay
@@ -189,16 +193,36 @@ class VoxelDiffusionLearnedModule(LightningModule):
     def training_step(self, batch: Any) -> torch.Tensor:
         # Retrieve the optimizer.
         opt = self.optimizers()
+        current_lr = opt.param_groups[0]['lr']
+        
+        # Log the learning rate: log on every step and show it in the progress bar.
+        self.log("lr", current_lr, on_step=True, on_epoch=False, prog_bar=True)
+        
         # Assume 'batch' is already on the correct device.
         whole_CT = batch["whole_CT"]
         with autocast(enabled=self.amp):
             #log.error(batch['vertebrae'].shape)
-            loss, decoded_volume = self.diffusion(batch["vertebrae"])
-            DRR_loss = grad_ncc_loss(vol_whole = whole_CT, vol_vertebra = decoded_volume, results_folder=self.results_folder, step = self.step)
-            loss = loss + DRR_loss # I think so at least we'll have to check 
+            diffusion_loss, decoded_volume = self.diffusion(batch["vertebrae"])
+            #DRR_loss = grad_ncc_loss(vol_whole = whole_CT, vol_vertebra = decoded_volume, results_folder=self.results_folder, step = self.step)
+            loss = self.diffusion_weight * diffusion_loss #+ self.DRR_weight * DRR_loss # I think so at least we'll have to check 
+            #can weight with different lambdas 
 
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
+        #diff_grads = torch.autograd.grad(
+        #    loss/self.gradient_accumulate_every,                      # which loss
+        #    self.diffusion.parameters(),          # wrt which params
+        #    retain_graph=True,    # keep graph alive for later backward
+        #    create_graph=False    # just first‐order grads
+        #)
+        #drr_grads = torch.autograd.grad(
+        #    DRR_loss/self.gradient_accumulate_every,                      # which loss
+        #    self.diffusion.parameters(),
+        #    retain_graph=True,    # STILL keep the graph for the final backward
+        #    create_graph=False
+        #)
+        #self.log("train/diffusion_grads", diff_grads, prog_bar=True)
+        #self.log("train/drr_grads", drr_grads, prog_bar=True)
         self.scaler.scale(loss).backward()
 
         if (self.step + 1) % self.gradient_accumulate_every == 0: # accumulated gradient already now 
@@ -208,6 +232,9 @@ class VoxelDiffusionLearnedModule(LightningModule):
             self.scaler.step(opt)
             self.scaler.update()
             opt.zero_grad()
+            self.lr_schedulers().step()
+
+            #self.log("grad_norm", grad_norm, on_step=True, prog_bar=True)
             
             # IN orig code, EMA model only updates after grad_accum is done but here I can't do that so i only execute
             # after the grad has accumulated`
@@ -234,7 +261,8 @@ class VoxelDiffusionLearnedModule(LightningModule):
             volume_tensor_to_nifti(all_videos_list, volume_path)
             ckpt_folder = self.results_folder / 'checkpoints'
             self.ema_model.train() # sets back to train model 
-        self.log('train/ncc_loss', DRR_loss, prog_bar=True)
+        #self.log('train/ncc_loss', DRR_loss * self.gradient_accumulate_every, prog_bar=True)
+        self.log("train/diffusion_loss", diffusion_loss * self.gradient_accumulate_every, prog_bar=True)
         self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)
         self.step += 1
         return loss

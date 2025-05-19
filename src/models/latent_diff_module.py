@@ -37,9 +37,10 @@ def volume_tensor_to_nifti(tensor, path):
     
     # Convert the tensor to a NumPy array. If needed, move to CPU.
     np_volume = tensor.cpu().numpy()
+    np_volume = np_volume.astype(np.float32)
     #assert(tensor.max() <= 1.0)
     #assert(tensor.min() >= -1.0)
-    log.error(np_volume.shape)
+    #log.error(np_volume.shape)
     
     # Create an identity affine. You can change this if you have spatial metadata.
     affine = np.eye(4)
@@ -206,7 +207,13 @@ class LatentDiffusionModule(LightningModule):
         # Assume 'batch' is already on the correct device.
         with autocast(enabled=self.amp):
             #log.error(batch[0].shape)
-            loss, _ = self.diffusion(batch)
+            loss, decoded_volume = self.diffusion(batch)
+            if self.step % 500 == 0: # save decoded every 500 steps 
+                volume_folder = self.results_folder / 'volumes'
+                volume_folder.mkdir(exist_ok=True, parents=True)
+                volume_path = str(volume_folder / f'decode_{self.step}.nii')
+                # Save the volume using the custom function.
+                volume_tensor_to_nifti(decoded_volume.detach(), volume_path)
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
@@ -230,11 +237,13 @@ class LatentDiffusionModule(LightningModule):
             # Save checkpoints and sample images at intervals.
         if self.step != 0 and self.step % self.save_and_sample_every == 0:
             self.ema_model.eval()
+            #self.diffusion.eval()
             with torch.no_grad():
                 milestone = self.step
                 num_samples = self.num_sample_rows ** 2
                 batches = num_to_groups(num_samples, self.batch_size)
                 # Sample using the EMA model (assumes self.diffusion.sample exists).
+                #self.ema_model.sample(batch_size=n), batches))
                 all_videos_list = list(map(lambda n: self.ema_model.sample(batch_size=n), batches))
                 all_videos_list = torch.cat(all_videos_list, dim=0)
                 log.info(all_videos_list.shape)
@@ -245,6 +254,7 @@ class LatentDiffusionModule(LightningModule):
             # Save the volume using the custom function.
             volume_tensor_to_nifti(all_videos_list, volume_path)
             ckpt_folder = self.results_folder / 'checkpoints'
+            #self.diffusion.train()
             self.ema_model.train() # sets back to train model 
 
         self.log("train/loss", loss * self.gradient_accumulate_every, prog_bar=True)

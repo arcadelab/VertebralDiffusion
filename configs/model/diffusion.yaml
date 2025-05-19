@@ -16,6 +16,7 @@ batch_size: ${data.batch_size}                    # Batch size for training
 unet3d:
   _target_: src.models.ddpm.Unet3D
   dim: ${data.dim}           # Spatial resolution, must match diffusion.image_size
+  init_dim: ${data.dim}  
   dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
   channels: 1         # Number of channels (idk why we have 8 but ask later)
 
@@ -27,8 +28,8 @@ diffusion:
   timesteps: 300                   # Total number of diffusion steps
   loss_type: "l1"                   # Type of loss ("l1" or "l2")
   channels: 1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
-  vqgan_ckpt: None                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
-
+  vqgan_ckpt: null                  # Optional: path to a VQGAN checkpoint (if not used, set to null)
+  cache_dir: null
 
 optimizer:
   _target_: torch.optim.AdamW
