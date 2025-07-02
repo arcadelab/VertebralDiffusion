@@ -2,7 +2,7 @@ from typing import Any, Optional
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from .ddpm import Unet3D, GaussianDiffusion
+from .ddpm import Unet3D, GaussianDiffusion#, GaussianDiffusionRevised
 from .ddpm import *
 import numpy as np
 import lightning
@@ -30,9 +30,7 @@ def volume_tensor_to_nifti(tensor, path):
     #tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
     
     # If there's a single channel, remove that dimension.
-    if tensor.shape[0] == 1:
-        tensor = tensor.squeeze(0)
-    if tensor.shape[0] == 1:
+    while tensor.shape[0] ==  1:
         tensor = tensor.squeeze(0)
     
     # Convert the tensor to a NumPy array. If needed, move to CPU.
@@ -204,16 +202,25 @@ class LatentDiffusionModule(LightningModule):
         # Log the learning rate: log on every step and show it in the progress bar.
         self.log("lr", current_lr, on_step=True, on_epoch=False, prog_bar=True)
         
+        #TODO: check the original repo for grad accum 
+        
         # Assume 'batch' is already on the correct device.
         with autocast(enabled=self.amp):
             #log.error(batch[0].shape)
             loss, decoded_volume = self.diffusion(batch)
-            if self.step % 500 == 0: # save decoded every 500 steps 
+            if self.step % 100 == 0: # save decoded every 500 steps 
                 volume_folder = self.results_folder / 'volumes'
                 volume_folder.mkdir(exist_ok=True, parents=True)
-                volume_path = str(volume_folder / f'decode_{self.step}.nii')
-                # Save the volume using the custom function.
-                volume_tensor_to_nifti(decoded_volume.detach(), volume_path)
+                log.error(f"decoded volume shape: {decoded_volume.shape}")
+                log.error(f"batch shape: {batch.shape}")
+                # Save each volume in the batch separately
+                for i in range(batch.shape[0]):
+                    # Save the decoded volume
+                    volume_path = str(volume_folder / f'decode_{self.step}_batch_{i}.nii')
+                    volume_tensor_to_nifti(decoded_volume[i].detach(), volume_path)
+                    # Save the original volume
+                    original_volume_path = str(volume_folder / f'original_{self.step}_batch_{i}.nii')
+                    volume_tensor_to_nifti(batch[i].detach(), original_volume_path)
         # Scale loss for gradient accumulation.
         loss = loss / self.gradient_accumulate_every
         self.scaler.scale(loss).backward()
@@ -244,6 +251,7 @@ class LatentDiffusionModule(LightningModule):
                 batches = num_to_groups(num_samples, self.batch_size)
                 # Sample using the EMA model (assumes self.diffusion.sample exists).
                 #self.ema_model.sample(batch_size=n), batches))
+                #TODO: sample from the original diff model instead of the ema model 
                 all_videos_list = list(map(lambda n: self.ema_model.sample(batch_size=n), batches))
                 all_videos_list = torch.cat(all_videos_list, dim=0)
                 log.info(all_videos_list.shape)

@@ -60,9 +60,11 @@ def volume_tensor_to_nifti(tensor, path):
     #tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min())
     
     # If there's a single channel, remove that dimension.
-    if tensor.shape[0] == 1:
-        tensor = tensor.squeeze(0)
-    if tensor.shape[0] == 1:
+    #if tensor.shape[0] == 1:
+    #    tensor = tensor.squeeze(0)
+    #if tensor.shape[0] == 1:
+    #    tensor = tensor.squeeze(0)
+    while tensor.shape[0] == 1:
         tensor = tensor.squeeze(0)
     
     # Convert the tensor to a NumPy array. If needed, move to CPU.
@@ -823,17 +825,19 @@ class VQGAN3D_Seg(LightningModule):
         self.log("val/perplexity", vq_output["perplexity"], prog_bar=True)
         self.log("val/commitment_loss", vq_output["commitment_loss"], prog_bar=True)
 
-    def test_step(self, batch):
-        
-        #print(f"Batch idx: {batch_idx}")
-        #print(batch.shape)
-        x = batch#["data"]  
+    def test_step(self, batch, batch_idx=None):
+        x = batch  # shape: (B, C, T, H, W)
         recon_loss, x_recon, vq_output, _, perceptual_loss, _ = self.forward_ae(x)
+        B = x.shape[0]
         volume_folder = self.results_folder / 'volumes'
         volume_folder.mkdir(parents=True, exist_ok=True)
-        volume_path = str(volume_folder / f'{self.global_step}.nii')
-        #if self.global_step != 0 and self.global_step % self.log_every == 0:
-        volume_tensor_to_nifti(x_recon[0], volume_path)
+        for i in range(B):
+            # Save original
+            orig_path = str(volume_folder / f'orig_batch{batch_idx}_item{i}.nii')
+            volume_tensor_to_nifti(x[i], orig_path)
+            # Save reconstruction
+            recon_path = str(volume_folder / f'recon_batch{batch_idx}_item{i}.nii')
+            volume_tensor_to_nifti(x_recon[i], recon_path)
         self.log("test/recon_loss", recon_loss, prog_bar=True)
         self.log("test/perceptual_loss", perceptual_loss, prog_bar=True)
         self.log("test/perplexity", vq_output["perplexity"], prog_bar=True)

@@ -396,8 +396,8 @@ class Unet3D(LightningModule):
         init_dim=None,
         init_kernel_size=7,
         use_sparse_linear_attn=True,
-        block_type='resnet',
-        resnet_groups=8
+        block_type="resnet",
+        resnet_groups=8,
     ):
         super().__init__()
         self.channels = channels
@@ -406,12 +406,15 @@ class Unet3D(LightningModule):
 
         rotary_emb = RotaryEmbedding(min(32, attn_dim_head))
 
-        def temporal_attn(dim): return EinopsToAndFrom('b c f h w', 'b (h w) f c', Attention(
-            dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb))
+        def temporal_attn(dim):
+            return EinopsToAndFrom(
+                "b c f h w",
+                "b (h w) f c",
+                Attention(dim, heads=attn_heads, dim_head=attn_dim_head, rotary_emb=rotary_emb),
+            )
 
         # realistically will not be able to generate that many frames of video... yet
-        self.time_rel_pos_bias = RelativePositionBias(
-            heads=attn_heads, max_distance=32)
+        self.time_rel_pos_bias = RelativePositionBias(heads=attn_heads, max_distance=32)
 
         # initial conv
 
@@ -419,16 +422,18 @@ class Unet3D(LightningModule):
         assert is_odd(init_kernel_size)
 
         init_padding = init_kernel_size // 2
-        self.init_conv = nn.Conv3d(channels, init_dim, (1, init_kernel_size,
-                                   init_kernel_size), padding=(0, init_padding, init_padding))
+        self.init_conv = nn.Conv3d(
+            channels,
+            init_dim,
+            (1, init_kernel_size, init_kernel_size),
+            padding=(0, init_padding, init_padding),
+        )
 
-        self.init_temporal_attn = Residual(
-            PreNorm(init_dim, temporal_attn(init_dim)))
+        self.init_temporal_attn = Residual(PreNorm(init_dim, temporal_attn(init_dim)))
 
         # dimensions
 
         dims = [init_dim, *map(lambda m: dim * m, dim_mults)]
-        log.error(dims)
         in_out = list(zip(dims[:-1], dims[1:]))
 
         # time conditioning
@@ -438,7 +443,7 @@ class Unet3D(LightningModule):
             SinusoidalPosEmb(dim),
             nn.Linear(dim, time_dim),
             nn.GELU(),
-            nn.Linear(time_dim, time_dim)
+            nn.Linear(time_dim, time_dim),
         )
 
         # text conditioning
@@ -446,8 +451,11 @@ class Unet3D(LightningModule):
         self.has_cond = exists(cond_dim) or use_bert_text_cond
         cond_dim = BERT_MODEL_DIM if use_bert_text_cond else cond_dim
 
-        self.null_cond_emb = nn.Parameter(
-            torch.randn(1, cond_dim)) if self.has_cond else None
+        # self.null_cond_emb = nn.Parameter(
+        #     torch.randn(1, cond_dim)) if self.has_cond else None
+        self.null_cond_emb = (
+            nn.Parameter(torch.zeros(1, cond_dim), requires_grad=False) if self.has_cond else None
+        )
 
         cond_dim = time_dim + int(cond_dim or 0)
 
@@ -468,56 +476,72 @@ class Unet3D(LightningModule):
         for ind, (dim_in, dim_out) in enumerate(in_out):
             is_last = ind >= (num_resolutions - 1)
 
-            self.downs.append(nn.ModuleList([
-                block_klass_cond(dim_in, dim_out),
-                block_klass_cond(dim_out, dim_out),
-                Residual(PreNorm(dim_out, SpatialLinearAttention(
-                    dim_out, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(),
-                Residual(PreNorm(dim_out, temporal_attn(dim_out))),
-                Downsample(dim_out) if not is_last else nn.Identity()
-            ]))
+            self.downs.append(
+                nn.ModuleList(
+                    [
+                        block_klass_cond(dim_in, dim_out),
+                        block_klass_cond(dim_out, dim_out),
+                        (
+                            Residual(
+                                PreNorm(
+                                    dim_out,
+                                    SpatialLinearAttention(dim_out, heads=attn_heads),
+                                )
+                            )
+                            if use_sparse_linear_attn
+                            else nn.Identity()
+                        ),
+                        Residual(PreNorm(dim_out, temporal_attn(dim_out))),
+                        Downsample(dim_out) if not is_last else nn.Identity(),
+                    ]
+                )
+            )
 
         mid_dim = dims[-1]
         self.mid_block1 = block_klass_cond(mid_dim, mid_dim)
 
         spatial_attn = EinopsToAndFrom(
-            'b c f h w', 'b f (h w) c', Attention(mid_dim, heads=attn_heads))
+            "b c f h w", "b f (h w) c", Attention(mid_dim, heads=attn_heads)
+        )
 
         self.mid_spatial_attn = Residual(PreNorm(mid_dim, spatial_attn))
-        self.mid_temporal_attn = Residual(
-            PreNorm(mid_dim, temporal_attn(mid_dim)))
+        self.mid_temporal_attn = Residual(PreNorm(mid_dim, temporal_attn(mid_dim)))
 
         self.mid_block2 = block_klass_cond(mid_dim, mid_dim)
 
         for ind, (dim_in, dim_out) in enumerate(reversed(in_out)):
             is_last = ind >= (num_resolutions - 1)
 
-            self.ups.append(nn.ModuleList([
-                block_klass_cond(dim_out * 2, dim_in),
-                block_klass_cond(dim_in, dim_in),
-                Residual(PreNorm(dim_in, SpatialLinearAttention(
-                    dim_in, heads=attn_heads))) if use_sparse_linear_attn else nn.Identity(),
-                Residual(PreNorm(dim_in, temporal_attn(dim_in))),
-                Upsample(dim_in) if not is_last else nn.Identity()
-            ]))
+            self.ups.append(
+                nn.ModuleList(
+                    [
+                        block_klass_cond(dim_out * 2, dim_in),
+                        block_klass_cond(dim_in, dim_in),
+                        (
+                            Residual(
+                                PreNorm(
+                                    dim_in,
+                                    SpatialLinearAttention(dim_in, heads=attn_heads),
+                                )
+                            )
+                            if use_sparse_linear_attn
+                            else nn.Identity()
+                        ),
+                        Residual(PreNorm(dim_in, temporal_attn(dim_in))),
+                        Upsample(dim_in) if not is_last else nn.Identity(),
+                    ]
+                )
+            )
 
         out_dim = default(out_dim, channels)
-        self.final_conv = nn.Sequential(
-            block_klass(dim * 2, dim),
-            nn.Conv3d(dim, out_dim, 1)
-        )
+        self.final_conv = nn.Sequential(block_klass(dim * 2, dim), nn.Conv3d(dim, out_dim, 1))
 
-    def forward_with_cond_scale(
-        self,
-        *args,
-        cond_scale=2.,
-        **kwargs
-    ):
-        logits = self.forward(*args, null_cond_prob=0., **kwargs)
+    def forward_with_cond_scale(self, *args, cond_scale=2.0, **kwargs):
+        logits = self.forward(*args, null_cond_prob=0.0, **kwargs)
         if cond_scale == 1 or not self.has_cond:
             return logits
 
-        null_logits = self.forward(*args, null_cond_prob=1., **kwargs)
+        null_logits = self.forward(*args, null_cond_prob=1.0, **kwargs)
         return null_logits + (logits - null_logits) * cond_scale
 
     def forward(
@@ -525,17 +549,20 @@ class Unet3D(LightningModule):
         x,
         time,
         cond=None,
-        null_cond_prob=0.,
+        null_cond_prob=0.0,
         focus_present_mask=None,
         # probability at which a given batch sample will focus on the present (0. is all off, 1. is completely arrested attention across time)
-        prob_focus_present=0.
+        prob_focus_present=0.0,
     ):
-        assert not (self.has_cond and not exists(cond)
-                    ), 'cond must be passed in if cond_dim specified'
+        assert not (
+            self.has_cond and not exists(cond)
+        ), "cond must be passed in if cond_dim specified"
         batch, device = x.shape[0], x.device
 
-        focus_present_mask = default(focus_present_mask, lambda: prob_mask_like(
-            (batch,), prob_focus_present, device=device))
+        focus_present_mask = default(
+            focus_present_mask,
+            lambda: prob_mask_like((batch,), prob_focus_present, device=device),
+        )
 
         time_rel_pos_bias = self.time_rel_pos_bias(x.shape[2], device=x.device)
 
@@ -551,8 +578,7 @@ class Unet3D(LightningModule):
         if self.has_cond:
             batch, device = x.shape[0], x.device
             mask = prob_mask_like((batch,), null_cond_prob, device=device)
-            cond = torch.where(rearrange(mask, 'b -> b 1'),
-                               self.null_cond_emb, cond)
+            cond = torch.where(rearrange(mask, "b -> b 1"), self.null_cond_emb, cond)
             t = torch.cat((t, cond), dim=-1)
 
         h = []
@@ -561,43 +587,24 @@ class Unet3D(LightningModule):
             x = block1(x, t)
             x = block2(x, t)
             x = spatial_attn(x)
-            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
-                              focus_present_mask=focus_present_mask)
-            #log.error('appending to h')
-            #log.error('downsampling')           
-            #log.error(x.shape)
+            x = temporal_attn(x, pos_bias=time_rel_pos_bias, focus_present_mask=focus_present_mask)
             h.append(x)
-            #if x.shape[-1] == 14:  # If spatial dimension is 7, this is because my input dim is screwed up
-            #    conv = nn.Conv3d(x.shape[1], x.shape[1], (1, 3, 3), (1, 2, 2), (0, 0, 0)).to(x.device)
-            #    x = conv(x)
-            #else:
             x = downsample(x)
 
         x = self.mid_block1(x, t)
         x = self.mid_spatial_attn(x)
         x = self.mid_temporal_attn(
-            x, pos_bias=time_rel_pos_bias, focus_present_mask=focus_present_mask)
+            x, pos_bias=time_rel_pos_bias, focus_present_mask=focus_present_mask
+        )
         x = self.mid_block2(x, t)
 
         for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
-            #log.error('spatial mismatch')
-            ##test = h.copy()
-            #log.error(len(h))
-            #log.error(h[-1].shape)
-            #log.error('x shape')
-            #log.error(len(x))
-            #log.error(x.shape)
             x = torch.cat((x, h.pop()), dim=1)
             x = block1(x, t)
             x = block2(x, t)
             x = spatial_attn(x)
-            x = temporal_attn(x, pos_bias=time_rel_pos_bias,
-                              focus_present_mask=focus_present_mask)
-            if x.shape[-1] == 3:  # Special case for 3->7
-                conv = nn.ConvTranspose3d(x.shape[1], x.shape[1], (1, 3, 3), (1, 2, 2), (0, 0, 0)).to(x.device)
-                x = conv(x)
-            else:
-                x = upsample(x)
+            x = temporal_attn(x, pos_bias=time_rel_pos_bias, focus_present_mask=focus_present_mask)
+            x = upsample(x)
 
         x = torch.cat((x, r), dim=1)
         return self.final_conv(x)
@@ -622,7 +629,9 @@ def cosine_beta_schedule(timesteps, s=0.008):
         ((x / timesteps) + s) / (1 + s) * torch.pi * 0.5) ** 2
     alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
-    return torch.clip(betas, 0, 0.9999)
+    # Clip betas to prevent extreme values
+    betas = torch.clip(betas, 0.0001, 0.9999)
+    return betas
 
 
 class GaussianDiffusion(nn.Module):
@@ -743,7 +752,7 @@ class GaussianDiffusion(nn.Module):
             x, t=t, noise=self.denoise_fn.forward_with_cond_scale(x, t, cond=cond, cond_scale=cond_scale))
 
         if clip_denoised:
-            s = 1.
+            s = 1.0
             if self.use_dynamic_thres:
                 s = torch.quantile(
                     rearrange(x_recon, 'b ... -> b (...)').abs(),
@@ -755,6 +764,7 @@ class GaussianDiffusion(nn.Module):
                 s = s.view(-1, *((1,) * (x_recon.ndim - 1)))
 
             # clip by threshold, depending on whether static or dynamic
+            #log.info(f"clamping is from -1 to 1")
             x_recon = x_recon.clamp(-s, s) / s
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
@@ -764,13 +774,20 @@ class GaussianDiffusion(nn.Module):
     @torch.inference_mode()
     def p_sample(self, x, t, cond=None, cond_scale=1., clip_denoised=True):
         b, *_, device = *x.shape, x.device
+        #assert not clip_denoised, "you shouldnt be clipping denoised"
         model_mean, _, model_log_variance = self.p_mean_variance(
             x=x, t=t, clip_denoised=clip_denoised, cond=cond, cond_scale=cond_scale)
         noise = torch.randn_like(x)
         # no noise when t == 0
         nonzero_mask = (1 - (t == 0).float()).reshape(b,
                                                       *((1,) * (len(x.shape) - 1)))
-        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise
+        #TODO: check all the eqns with the latent diffusion paper/repo 
+        # https://github.com/CompVis/latent-diffusion/blob/main/ldm/models/diffusion/plms.py
+        # Why are the changes in the eqns? How does this compare to other implementations?
+        
+        
+        #TODO: start with another revision between the two 
+        return model_mean + nonzero_mask * (0.5 * model_log_variance).exp() * noise 
 
     @torch.inference_mode()
     def p_sample_loop(self, shape, cond=None, cond_scale=1.):
@@ -778,7 +795,7 @@ class GaussianDiffusion(nn.Module):
 
         b = shape[0]
         img = torch.randn(shape, device=device)
-        log.info(f"Initial noise stats - mean: {img.mean():.3f}, std: {img.std():.3f}")
+        log.info(f"Initial noise stats - min: {img.min():.3f}, max: {img.max():.3f}, mean: {img.mean():.3f}, std: {img.std():.3f}")
 
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
             img = self.p_sample(img, torch.full(
@@ -786,12 +803,13 @@ class GaussianDiffusion(nn.Module):
             
             # Log stats every 50 steps
             if i % 50 == 0:
-                log.info(f"Step {i} stats - mean: {img.mean():.3f}, std: {img.std():.3f}")
+                log.info(f"Step {i} stats - min: {img.min():.3f}, max: {img.max():.3f}, mean: {img.mean():.3f}, std: {img.std():.3f}")
 
-        log.info(f"Final sample stats - mean: {img.mean():.3f}, std: {img.std():.3f}")
+        log.info(f"Final sample stats - min: {img.min():.3f}, max: {img.max():.3f}, mean: {img.mean():.3f}, std: {img.std():.3f}")
         return img
 
     @torch.inference_mode()
+    #TODO: check the original repo for the sample function
     def sample(self, cond=None, cond_scale=1., batch_size=16):
         device = next(self.denoise_fn.parameters()).device
 
@@ -803,22 +821,34 @@ class GaussianDiffusion(nn.Module):
         channels = self.channels
         num_frames = self.num_frames
         
+        
         _sample = self.p_sample_loop(
             (batch_size, channels, num_frames, image_size, image_size), cond=cond, cond_scale=cond_scale)
 
         if isinstance(self.vqgan, VQGAN3D):
-            # Log statistics before denormalization
-            log.info(f"Sample stats before denorm - mean: {_sample.mean():.3f}, std: {_sample.std():.3f}")
+            # Log VQGAN codebook statistics
+            log.info(f"VQGAN codebook stats - min: {self.vqgan.codebook.embeddings.min():.3f}, max: {self.vqgan.codebook.embeddings.max():.3f}, mean: {self.vqgan.codebook.embeddings.mean():.3f}, std: {self.vqgan.codebook.embeddings.std():.3f}")
             
-            # Denormalize from standardized space to VQGAN latent space
-            _sample = (_sample * self.vqgan.codebook.embeddings.std()) + self.vqgan.codebook.embeddings.mean()
+            # Log statistics before denormalization
+            log.info(f"Sample stats before denorm - min: {_sample.min():.3f}, max: {_sample.max():.3f}, mean: {_sample.mean():.3f}, std: {_sample.std():.3f}")
+            
+            
+            min_ = self.vqgan.codebook.embeddings.min()
+            max_ = self.vqgan.codebook.embeddings.max()
+            _sample = ((_sample + 1.0) / 2.0) * (max_ - min_) + min_
+            
+            #_sample = unnormalize_img(_sample)
             
             # Log statistics after denormalization
-            log.info(f"Sample stats after denorm - mean: {_sample.mean():.3f}, std: {_sample.std():.3f}")
-            #log.info(f"VQGAN codebook stats - mean: {self.vqgan.codebook.embeddings.mean():.3f}, std: {self.vqgan.codebook.embeddings.std():.3f}")
+            log.info(f"Sample stats after denorm - min: {_sample.min():.3f}, max: {_sample.max():.3f}, mean: {_sample.mean():.3f}, std: {_sample.std():.3f}")
             
+            # Decode with quantization
             _sample = self.vqgan.decode(_sample, quantize=True)
+            
+            # Log final output statistics
+            log.info(f"Final output stats - min: {_sample.min():.3f}, max: {_sample.max():.3f}, mean: {_sample.mean():.3f}, std: {_sample.std():.3f}")
         else:
+            assert 1==2, "you shouldnt be doing unnorm here"
             unnormalize_img(_sample)
 
         return _sample
@@ -877,28 +907,24 @@ class GaussianDiffusion(nn.Module):
         if isinstance(self.vqgan, VQGAN3D) or isinstance(self.vqgan, VQGAN3D_Seg):
             vqgan_flag = True
             with torch.no_grad():
-                x, _ = self.vqgan.encode(
-                    x, quantize=True, include_embeddings=True) # the raw latents after convolution on the encodings 
-                #log.error(x.shape)
-                # normalize to -1 to 1 
-                #x = ((x - self.vqgan.codebook.embeddings.min()) /
-                #     (self.vqgan.codebook.embeddings.max() -
-                #      self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0 # normalize w.r.t. the codebook embeds?
-                # standardize instead maybe
-                # 
-                x = (x - self.vqgan.codebook.embeddings.mean())/(self.vqgan.codebook.embeddings.std()) 
-                x = (x - self.vqgan.codebook.embeddings.mean())/(self.vqgan.codebook.embeddings.std())
-                log.info(f"Training latent stats - mean: {x.mean():.3f}, std: {x.std():.3f}")
-                #if self.cache_dir != None:
-                #    try:
-                #        filename = f"encoded_vector_{self.cache_counter}.pt"
-                #        torch.save(x.cpu(), self.cache_dir / filename) 
-                #        self.cache_counter += 1
-                #    except Exception as e:
-                #        log.error(f"Error saving cache file {self.cache_dir}: {e}")
+                x, _ = self.vqgan.encode(x, quantize=True, include_embeddings=True)
+                # Log codebook statistics
+                log.info(f"VQGAN codebook stats - min: {self.vqgan.codebook.embeddings.min():.3f}, max: {self.vqgan.codebook.embeddings.max():.3f}, mean: {self.vqgan.codebook.embeddings.mean():.3f}, std: {self.vqgan.codebook.embeddings.std():.3f}")
+                
+                # Log raw latent statistics before normalization
+                log.info(f"Raw latent stats before norm - min: {x.min():.3f}, max: {x.max():.3f}, mean: {x.mean():.3f}, std: {x.std():.3f}")
+                
+                x = ((x - self.vqgan.codebook.embeddings.min()) /
+                     (self.vqgan.codebook.embeddings.max() -
+                      self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
+                #x = x * 2.0 - 1.0
+                
+                # Log normalized latent statistics
+                log.info(f"Normalized latent stats - min: {x.min():.3f}, max: {x.max():.3f}, mean: {x.mean():.3f}, std: {x.std():.3f}")
 
         else:
             #log.info("You're doing pixel space diffusion so no need to encode")
+            assert 1==2, "you shouldnt be doing unnorm of *2 - 1 here"
             x = normalize_img(x)
         #if vqgan_flag:
         #    decoded_volume = self.vqgan.decode(x, quantize=True) # use codebook latents
@@ -909,7 +935,11 @@ class GaussianDiffusion(nn.Module):
         check_shape(x, 'b c f h w', c=self.channels,
                     f=self.num_frames, h=img_size, w=img_size)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
-        loss, x_recon, x_noisy = self.p_losses(x, t, *args, **kwargs)
+        
+        #TODO: before running p_losses decode the volume and check 
+        
+        loss, x_recon, x_noisy = self.p_losses(x, t, *args, **kwargs) # x_recon is the predicted noise
+        log.info(f"Noised latent stats - min: {x_noisy.min():.3f}, max: {x_noisy.max():.3f}, mean: {x_noisy.mean():.3f}, std: {x_noisy.std():.3f}")
         if vqgan_flag:
             #log.error(f"decoded volume shape: {decoded_volume.shape}")
             # gather the schedules for the current t
@@ -918,13 +948,17 @@ class GaussianDiffusion(nn.Module):
 
             # reconstruct the predicted clean latent:
             z0_pred = (x_noisy - sqrt_mab * x_recon) / sqrt_ab
+            # Log denoised latent statistics (before denormalization)
+            log.info(f"Denoised latent (z0_pred) stats - min: {z0_pred.min():.3f}, max: {z0_pred.max():.3f}, mean: {z0_pred.mean():.3f}, std: {z0_pred.std():.3f}")
             min_ = self.vqgan.codebook.embeddings.min()
             max_ = self.vqgan.codebook.embeddings.max()
-            #z0_pred_denorm = (z0_pred + 1) / 2 * (max_ - min_) + min_
-            z0_pred_destand = (z0_pred * self.vqgan.codebook.embeddings.std()) + self.vqgan.codebook.embeddings.mean()
-            decoded_volume = self.vqgan.decode(z0_pred_destand, quantize=True) # use codebook latents
-            # we want this here because the denoised volume is in latent space with the vqgan
-            #log.info(f"decoded volume shape: {decoded_volume.shape}")
+            # denorm the denoised latent volume
+            z0_pred_denorm = (z0_pred + 1) / 2 * (max_ - min_) + min_ # unnormalize_img(z0_pred) 
+            # Log denoised latent statistics (after denormalization)
+            log.info(f"Denoised latent (z0_pred_denorm) stats - min: {z0_pred_denorm.min():.3f}, max: {z0_pred_denorm.max():.3f}, mean: {z0_pred_denorm.mean():.3f}, std: {z0_pred_denorm.std():.3f}")
+            decoded_volume = self.vqgan.decode(z0_pred_denorm, quantize=True) # use codebook latents
+            # Log decoded, denoised volume statistics
+            log.info(f"Decoded, denoised volume stats - min: {decoded_volume.min():.3f}, max: {decoded_volume.max():.3f}, mean: {decoded_volume.mean():.3f}, std: {decoded_volume.std():.3f}")
         
         return loss, decoded_volume
 

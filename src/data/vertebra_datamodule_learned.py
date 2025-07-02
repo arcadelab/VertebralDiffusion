@@ -61,7 +61,7 @@ class NiftiDataset(Dataset):
     def data_aug(self):
         rotation = RandomUniformRotation()
         train_transform = tio.Compose([
-        rotation,
+        #rotation,
         tio.Resample(target=(1, 1, 1)), # don't use 0.5
         tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu
         #tio.CropOrPad(
@@ -73,7 +73,7 @@ class NiftiDataset(Dataset):
         
         val_transform = tio.Compose([
             #tio.Resample(target=(1, 1, 0.5))
-           rotation,
+           #rotation,
            tio.Resample(target=(1, 1, 1)),
            tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu 
            #tio.CropOrPad(

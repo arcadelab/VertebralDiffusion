@@ -1,11 +1,11 @@
 _target_: src.models.VQGAN3D_Seg
 
-embedding_dim: 4 #64 # Needs to be the same as n_hiddens * 2**(downsample-1)
+embedding_dim: 4  # Increased from 4 to 64 for richer codebook vectors
 n_codes: 2048
 lr: 3e-4
 # encoder/decoder args
-n_hiddens: 32
-downsample: [2,2,2] #[4,4,4] #
+n_hiddens: 32 # orig is 32  # Increased from 32 to 64 to have more channels
+downsample: [2,2,2]  # Changed from [2,2,2] to [4,4,4] to decrease spatial resolution
 image_channels: 1
 results_folder: ${hydra:runtime.output_dir}       # Folder to save checkpoints and sample outputs
 norm_type: group
@@ -35,6 +35,8 @@ hc_weight: 0.0
 # Not used
 # i3d_feat: False
 # global_emb_dim: 8
+
+# We don't need this here as they're manually defined already 
 
 #optimizers:
 #  - _target_: torch.optim.Adam

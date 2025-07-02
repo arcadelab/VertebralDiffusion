@@ -5,9 +5,9 @@ ema_decay: 0.995                  # EMA decay factor
 #train_num_steps: 100000           # Total number of training steps
 gradient_accumulate_every:  2 #8      # Number of steps to accumulate gradients before an optimizer update
 amp: true                        # Use mixed precision training (true/false)
-step_start_ema: 2000              # Start EMA updates after this many steps
-update_ema_every: 10              # Frequency (in steps) to update the EMA model
-save_and_sample_every:  1000       # Frequency (in steps) to save checkpoints and generate samples
+step_start_ema: 10 #2000              # Start EMA updates after this many steps
+update_ema_every:  10              # Frequency (in steps) to update the EMA model
+save_and_sample_every:  100       # Frequency (in steps) to save checkpoints and generate samples
 results_folder: ${hydra:runtime.output_dir}       # Folder to save checkpoints and sample outputs
 num_sample_rows: 1                # Number of rows in the grid when visualizing samples
 max_grad_norm: 0.5 #null               # Maximum gradient norm for clipping (set to null if not used)
@@ -17,25 +17,27 @@ cache_dir:  ${paths.cache_dir}                  # Batch size for training
 unet3d:
   _target_: src.models.ddpm.Unet3D
   dim: 64 #${data.dim} # 64  #this has to be the same as the vqgan now           # Spatial resolution, must match diffusion.image_size
-  dim_mults: [1, 2, 4, 8]           # Multiplicative factors for channel scaling at each resolution
-  channels: 4         # Number of channels (idk why we have 8 but ask later)
+  dim_mults: [1, 2, 4] #8]           # Multiplicative factors for channel scaling at each resolution
+  channels:  4 #64         # Number of channels (idk why we have 8 but ask later)
 
 diffusion:
   _target_: src.models.ddpm.GaussianDiffusion
   denoise_fn: src.models.ddpm.Unet3D
-  image_size: 28 # ${data.dim} #this has to be the same as the vqgan now                   
-  num_frames: 28 # ${data.dim}   #this has to be the same as the vqgan now                      
-  timesteps: 300                   # Total number of diffusion steps
-  loss_type: "l2"                   # Type of loss ("l1" or "l2")
+  image_size: 28 #14 #28 # ${data.dim} #this has to be the same as the vqgan now                   
+  num_frames: 28 #14 #$28 # ${data.dim}   #this has to be the same as the vqgan now                      
+  timesteps:  300 #1000                   # Total number of diffusion steps
+  loss_type: "l1"                   # Type of loss ("l1" or "l2")
   channels: 4 #1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
   vqgan_ckpt: /home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-04-29_20-46-55/checkpoints/last.ckpt
+  #/home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-05-21_21-46-58/checkpoints/last.ckpt
+  #/home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-04-29_20-46-55/checkpoints/last.ckpt
   cache_dir: ${paths.cache_dir} # Path to the cache directory for storing intermediate results
 
 
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 2e-5
+  lr: 1e-4
   eps: 1e-08
   betas: [0.9, 0.999]
   weight_decay: 0.01

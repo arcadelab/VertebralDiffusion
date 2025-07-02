@@ -53,26 +53,28 @@ class NiftiDataset(Dataset):
     def data_aug(self):
         rotation = RandomUniformRotation()
         train_transform = tio.Compose([
-        rotation,
+        #rotation,
         tio.Resample(target=(1, 1, 1)), # don't use 0.5
         tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu
+        tio.RescaleIntensity(out_min_max=(0, 1)),
         #tio.CropOrPad(
         #   target_shape = (self.dim, self.dim, self.dim),
         ##    padding_mode=-1024
         #    ),
-        tio.RescaleIntensity(out_min_max = (-1, 1)),
+        #tio.RescaleIntensity(out_min_max = (-1, 1)),
         ])
         
         val_transform = tio.Compose([
             #tio.Resample(target=(1, 1, 0.5))
-           rotation,
+           #rotation,
            tio.Resample(target=(1, 1, 1)),
            tio.Resize((self.dim, self.dim, self.dim)), # shouldn't do but wait till bigger gpu 
+           tio.RescaleIntensity(out_min_max=(0, 1)),
            #tio.CropOrPad(
            # target_shape = (self.dim, self.dim, self.dim),
            # padding_mode= -1024
         #),
-            tio.RescaleIntensity(out_min_max = (-1, 1)),
+            #tio.RescaleIntensity(out_min_max = (-1, 1)),
         ])
         return train_transform, val_transform
     
@@ -154,8 +156,8 @@ class NiftiDataModule(LightningDataModule):
         # Shuffle the file list to ensure randomness.
         random.shuffle(nifti_files)
         n = len(nifti_files)
-        train_count = int(0.9 * n)
-        val_count =  int(0.1 * n)
+        train_count = 5 #int(0.9 * n) # supposed to be 0.9 but i'm tryna debug 
+        val_count =  5 #int(0.1 * n)
         #log.error(train_count)
         #log.debug(val_count)
         #log.error(val_count)
@@ -170,6 +172,7 @@ class NiftiDataModule(LightningDataModule):
         
         if stage is None or stage == "test":
             test_files = nifti_files[train_count + val_count:]
+            log.error(len(test_files))
             self.data_test = NiftiDataset(test_files, self.dim, train=False)
 
     def train_dataloader(self) -> DataLoader[Any]:
