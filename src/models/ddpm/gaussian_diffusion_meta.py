@@ -131,6 +131,7 @@ class GaussianDiffusionMetaStackedVQGANPL(GaussianDiffusion):
                         torch.full((b,), i, device=device, dtype=torch.long),
                         cond=cond_feed,
                         cond_scale=cond_scale,
+                        clip_denoised=False,
                     )
             else:
                 for i in reversed(range(0, self.num_timesteps)):
@@ -143,6 +144,7 @@ class GaussianDiffusionMetaStackedVQGANPL(GaussianDiffusion):
                         torch.full((b,), i, device=device, dtype=torch.long),
                         cond=cond_feed,
                         cond_scale=cond_scale,
+                        clip_denoised=False,
                     )
 
             return img

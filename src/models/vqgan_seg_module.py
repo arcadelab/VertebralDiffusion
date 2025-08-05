@@ -827,6 +827,7 @@ class VQGAN3D_Seg(LightningModule):
 
     def test_step(self, batch, batch_idx=None):
         x = batch  # shape: (B, C, T, H, W)
+        latent_list = []
         recon_loss, x_recon, vq_output, _, perceptual_loss, _ = self.forward_ae(x)
         B = x.shape[0]
         volume_folder = self.results_folder / 'volumes'
@@ -838,6 +839,11 @@ class VQGAN3D_Seg(LightningModule):
             # Save reconstruction
             recon_path = str(volume_folder / f'recon_batch{batch_idx}_item{i}.nii')
             volume_tensor_to_nifti(x_recon[i], recon_path)
+            latent_list.append(vq_output["embeddings"][i])
+            
+        all_latents_tensor = torch.cat(latent_list, dim=0)
+        scale_factor = 1.0 / all_latents_tensor.std()
+        log.error(f"Calculated Scale Factor: {scale_factor}")
         self.log("test/recon_loss", recon_loss, prog_bar=True)
         self.log("test/perceptual_loss", perceptual_loss, prog_bar=True)
         self.log("test/perplexity", vq_output["perplexity"], prog_bar=True)

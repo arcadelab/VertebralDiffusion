@@ -3,7 +3,7 @@
 defaults:
   - _self_
   - data: vertebrae # choose datamodule with `test_dataloader()` for evaluation
-  - model: latent_diffusion #vqgan3d_seg #diffusion #vqgan3d
+  - model: vqgan3d_seg #latent_diffusion #vqgan3d_seg #diffusion #vqgan3d
   - logger: wandb
   - trainer: gpu
   - paths: tetris

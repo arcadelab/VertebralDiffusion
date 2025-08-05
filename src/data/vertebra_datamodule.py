@@ -156,8 +156,8 @@ class NiftiDataModule(LightningDataModule):
         # Shuffle the file list to ensure randomness.
         random.shuffle(nifti_files)
         n = len(nifti_files)
-        train_count = 5 #int(0.9 * n) # supposed to be 0.9 but i'm tryna debug 
-        val_count =  5 #int(0.1 * n)
+        train_count = 5#int(0.9 * n) # supposed to be 0.9 but i'm tryna debug 
+        val_count =  5#int(0.1 * n)
         #log.error(train_count)
         #log.debug(val_count)
         #log.error(val_count)

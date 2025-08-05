@@ -19,6 +19,7 @@ from tqdm import tqdm
 from einops import rearrange
 from einops_exts import check_shape, rearrange_many
 
+import numpy as np
 from rotary_embedding_torch import RotaryEmbedding
 
 from .text import tokenize, bert_embed, BERT_MODEL_DIM
@@ -645,7 +646,7 @@ class GaussianDiffusion(nn.Module):
         channels=3,
         timesteps=1000,
         loss_type='l1',
-        use_dynamic_thres=False,  # from the Imagen paper
+        use_dynamic_thres=True,  # from the Imagen paper
         dynamic_thres_percentile=0.9,
         vqgan_ckpt=None,
         cache_dir=None,
@@ -752,7 +753,7 @@ class GaussianDiffusion(nn.Module):
             x, t=t, noise=self.denoise_fn.forward_with_cond_scale(x, t, cond=cond, cond_scale=cond_scale))
 
         if clip_denoised:
-            s = 1.0
+            s = 3.0
             if self.use_dynamic_thres:
                 s = torch.quantile(
                     rearrange(x_recon, 'b ... -> b (...)').abs(),
@@ -760,12 +761,15 @@ class GaussianDiffusion(nn.Module):
                     dim=-1
                 )
 
+                
                 s.clamp_(min=1.)
                 s = s.view(-1, *((1,) * (x_recon.ndim - 1)))
 
             # clip by threshold, depending on whether static or dynamic
             #log.info(f"clamping is from -1 to 1")
+            #np.save("example_1.npy", x_recon.detach().cpu().numpy())
             x_recon = x_recon.clamp(-s, s) / s
+            log.error(f"x_recon stats after clipping - min: {x_recon.min():.3f}, max: {x_recon.max():.3f}, mean: {x_recon.mean():.3f}, std: {x_recon.std():.3f}")
 
         model_mean, posterior_variance, posterior_log_variance = self.q_posterior(
             x_start=x_recon, x_t=x, t=t)
@@ -774,7 +778,6 @@ class GaussianDiffusion(nn.Module):
     @torch.inference_mode()
     def p_sample(self, x, t, cond=None, cond_scale=1., clip_denoised=True):
         b, *_, device = *x.shape, x.device
-        #assert not clip_denoised, "you shouldnt be clipping denoised"
         model_mean, _, model_log_variance = self.p_mean_variance(
             x=x, t=t, clip_denoised=clip_denoised, cond=cond, cond_scale=cond_scale)
         noise = torch.randn_like(x)
@@ -800,7 +803,7 @@ class GaussianDiffusion(nn.Module):
         for i in tqdm(reversed(range(0, self.num_timesteps)), desc='sampling loop time step', total=self.num_timesteps):
             img = self.p_sample(img, torch.full(
                 (b,), i, device=device, dtype=torch.long), cond=cond, cond_scale=cond_scale)
-            
+            np.save("example_1_img.npy", img.detach().cpu().numpy())
             # Log stats every 50 steps
             if i % 50 == 0:
                 log.info(f"Step {i} stats - min: {img.min():.3f}, max: {img.max():.3f}, mean: {img.mean():.3f}, std: {img.std():.3f}")
@@ -835,8 +838,8 @@ class GaussianDiffusion(nn.Module):
             
             min_ = self.vqgan.codebook.embeddings.min()
             max_ = self.vqgan.codebook.embeddings.max()
-            _sample = ((_sample + 1.0) / 2.0) * (max_ - min_) + min_
-            
+            _sample = (_sample + 1) / 2 * (max_ - min_) + min_ 
+            #_sample = _sample / 1.127897 # gets it back to the original scale
             #_sample = unnormalize_img(_sample)
             
             # Log statistics after denormalization
@@ -910,17 +913,19 @@ class GaussianDiffusion(nn.Module):
                 x, _ = self.vqgan.encode(x, quantize=True, include_embeddings=True)
                 # Log codebook statistics
                 log.info(f"VQGAN codebook stats - min: {self.vqgan.codebook.embeddings.min():.3f}, max: {self.vqgan.codebook.embeddings.max():.3f}, mean: {self.vqgan.codebook.embeddings.mean():.3f}, std: {self.vqgan.codebook.embeddings.std():.3f}")
-                
+                #x = x * 1.127897 # this is the scale factor for the latent distribution of mapped codebook vectors
+                # it has a std of 1 now
                 # Log raw latent statistics before normalization
                 log.info(f"Raw latent stats before norm - min: {x.min():.3f}, max: {x.max():.3f}, mean: {x.mean():.3f}, std: {x.std():.3f}")
                 
                 x = ((x - self.vqgan.codebook.embeddings.min()) /
                      (self.vqgan.codebook.embeddings.max() -
                       self.vqgan.codebook.embeddings.min())) * 2.0 - 1.0
-                #x = x * 2.0 - 1.0
                 
+                
+                np.save("example_2.npy", x.detach().cpu().numpy())
                 # Log normalized latent statistics
-                log.info(f"Normalized latent stats - min: {x.min():.3f}, max: {x.max():.3f}, mean: {x.mean():.3f}, std: {x.std():.3f}")
+                #log.info(f"Normalized latent stats - min: {x.min():.3f}, max: {x.max():.3f}, mean: {x.mean():.3f}, std: {x.std():.3f}")
 
         else:
             #log.info("You're doing pixel space diffusion so no need to encode")
@@ -954,6 +959,7 @@ class GaussianDiffusion(nn.Module):
             max_ = self.vqgan.codebook.embeddings.max()
             # denorm the denoised latent volume
             z0_pred_denorm = (z0_pred + 1) / 2 * (max_ - min_) + min_ # unnormalize_img(z0_pred) 
+            #z0_pred_denorm = z0_pred / 1.127897 # gets it back to the original scale
             # Log denoised latent statistics (after denormalization)
             log.info(f"Denoised latent (z0_pred_denorm) stats - min: {z0_pred_denorm.min():.3f}, max: {z0_pred_denorm.max():.3f}, mean: {z0_pred_denorm.mean():.3f}, std: {z0_pred_denorm.std():.3f}")
             decoded_volume = self.vqgan.decode(z0_pred_denorm, quantize=True) # use codebook latents
@@ -962,306 +968,3 @@ class GaussianDiffusion(nn.Module):
         
         return loss, decoded_volume
 
-# trainer class
-
-
-CHANNELS_TO_MODE = {
-    1: 'L',
-    3: 'RGB',
-    4: 'RGBA'
-}
-
-
-def seek_all_images(img, channels=3):
-    assert channels in CHANNELS_TO_MODE, f'channels {channels} invalid'
-    mode = CHANNELS_TO_MODE[channels]
-
-    i = 0
-    while True:
-        try:
-            img.seek(i)
-            yield img.convert(mode)
-        except EOFError:
-            break
-        i += 1
-
-# tensor of shape (channels, frames, height, width) -> gif
-
-
-def video_tensor_to_gif(tensor, path, duration=120, loop=0, optimize=True):
-    tensor = ((tensor - tensor.min()) / (tensor.max() - tensor.min())) * 1.0
-    images = map(T.ToPILImage(), tensor.unbind(dim=1))
-    first_img, *rest_imgs = images
-    first_img.save(path, save_all=True, append_images=rest_imgs,
-                   duration=duration, loop=loop, optimize=optimize)
-    return images
-
-# gif -> (channels, frame, height, width) tensor
-
-
-def gif_to_tensor(path, channels=3, transform=T.ToTensor()):
-    img = Image.open(path)
-    tensors = tuple(map(transform, seek_all_images(img, channels=channels)))
-    return torch.stack(tensors, dim=1)
-
-
-def identity(t, *args, **kwargs):
-    return t
-
-
-def normalize_img(t):
-    return t * 2 - 1
-
-
-def unnormalize_img(t):
-    return (t + 1) * 0.5
-
-
-def cast_num_frames(t, *, frames):
-    f = t.shape[1]
-
-    if f == frames:
-        return t
-
-    if f > frames:
-        return t[:, :frames]
-
-    return F.pad(t, (0, 0, 0, 0, 0, frames - f))
-
-
-class Dataset(data.Dataset):
-    def __init__(
-        self,
-        folder,
-        image_size,
-        channels=3,
-        num_frames=16,
-        horizontal_flip=False,
-        force_num_frames=True,
-        exts=['gif']
-    ):
-        super().__init__()
-        self.folder = folder
-        self.image_size = image_size
-        self.channels = channels
-        self.paths = [p for ext in exts for p in Path(
-            f'{folder}').glob(f'**/*.{ext}')]
-
-        self.cast_num_frames_fn = partial(
-            cast_num_frames, frames=num_frames) if force_num_frames else identity
-
-        self.transform = T.Compose([
-            T.Resize(image_size),
-            T.RandomHorizontalFlip() if horizontal_flip else T.Lambda(identity),
-            T.CenterCrop(image_size),
-            T.ToTensor()
-        ])
-
-    def __len__(self):
-        return len(self.paths)
-
-    def __getitem__(self, index):
-        path = self.paths[index]
-        tensor = gif_to_tensor(path, self.channels, transform=self.transform)
-        return self.cast_num_frames_fn(tensor)
-
-# trainer class
-
-
-class Trainer(object):
-    def __init__(
-        self,
-        diffusion_model,
-        cfg,
-        folder=None,
-        dataset=None,
-        *,
-        ema_decay=0.995,
-        num_frames=16,
-        train_batch_size=32,
-        train_lr=1e-4,
-        train_num_steps=100000,
-        gradient_accumulate_every=1,
-        amp=False,
-        step_start_ema=2000,
-        update_ema_every=10,
-        save_and_sample_every=1000,
-        results_folder='./results',
-        num_sample_rows=1,
-        max_grad_norm=None,
-        num_workers=20,
-    ):
-        super().__init__()
-        self.model = diffusion_model
-        self.ema = EMA(ema_decay)
-        self.ema_model = copy.deepcopy(self.model)
-        self.update_ema_every = update_ema_every
-
-        self.step_start_ema = step_start_ema
-        self.save_and_sample_every = save_and_sample_every
-
-        self.batch_size = train_batch_size
-        self.image_size = diffusion_model.image_size
-        self.gradient_accumulate_every = gradient_accumulate_every
-        self.train_num_steps = train_num_steps
-
-        image_size = diffusion_model.image_size
-        channels = diffusion_model.channels
-        num_frames = diffusion_model.num_frames
-
-        self.cfg = cfg
-        if dataset:
-            self.ds = dataset
-        else:
-            assert folder is not None, 'Provide a folder path to the dataset'
-            self.ds = Dataset(folder, image_size,
-                              channels=channels, num_frames=num_frames)
-        dl = DataLoader(self.ds, batch_size=train_batch_size,
-                        shuffle=True, pin_memory=True, num_workers=num_workers)
-
-        self.len_dataloader = len(dl)
-        self.dl = cycle(dl)
-
-        print(f'found {len(self.ds)} videos as gif files at {folder}')
-        assert len(
-            self.ds) > 0, 'need to have at least 1 video to start training (although 1 is not great, try 100k)'
-
-        self.opt = Adam(diffusion_model.parameters(), lr=train_lr)
-
-        self.step = 0
-
-        self.amp = amp
-        self.scaler = GradScaler(enabled=amp)
-        self.max_grad_norm = max_grad_norm
-
-        self.num_sample_rows = num_sample_rows
-        self.results_folder = Path(results_folder)
-        self.results_folder.mkdir(exist_ok=True, parents=True)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        self.ema_model.load_state_dict(self.model.state_dict())
-
-    def step_ema(self):
-        if self.step < self.step_start_ema:
-            self.reset_parameters()
-            return
-        self.ema.update_model_average(self.ema_model, self.model)
-
-    def save(self, milestone):
-        data = {
-            'step': self.step,
-            'model': self.model.state_dict(),
-            'ema': self.ema_model.state_dict(),
-            'scaler': self.scaler.state_dict()
-        }
-        ckpt_folder = self.results_folder / f'checkpoints'
-        ckpt_folder.mkdir(exist_ok=True, parents=True)
-        torch.save(data, str(self.results_folder / f'checkpoints' / f'model-{milestone}.pt'))
-
-    def load(self, milestone, map_location=None, **kwargs):
-        if milestone == -1:
-            all_milestones = [int(p.stem.split('-')[-1])
-                              for p in Path(self.results_folder).glob('**/*.pt')]
-            assert len(
-                all_milestones) > 0, 'need to have at least one milestone to load from latest checkpoint (milestone == -1)'
-            milestone = max(all_milestones)
-
-        if map_location:
-            data = torch.load(milestone, map_location=map_location)
-        else:
-            data = torch.load(milestone)
-
-        self.step = data['step']
-        self.model.load_state_dict(data['model'], **kwargs)
-        self.ema_model.load_state_dict(data['ema'], **kwargs)
-        self.scaler.load_state_dict(data['scaler'])
-
-    def train(
-        self,
-        prob_focus_present=0.,
-        focus_present_mask=None,
-        log_fn=noop
-    ):
-        assert callable(log_fn)
-
-        while self.step < self.train_num_steps:
-            for i in range(self.gradient_accumulate_every):
-                data = next(self.dl)['data'].cuda()
-
-                with autocast(enabled=self.amp):
-                    loss = self.model(
-                        data,
-                        prob_focus_present=prob_focus_present,
-                        focus_present_mask=focus_present_mask
-                    )
-
-                    self.scaler.scale(
-                        loss / self.gradient_accumulate_every).backward()
-
-                print(f'{self.step}: {loss.item()}')
-
-            log = {'loss': loss.item()}
-
-            if exists(self.max_grad_norm):
-                self.scaler.unscale_(self.opt)
-                nn.utils.clip_grad_norm_(
-                    self.model.parameters(), self.max_grad_norm)
-
-            self.scaler.step(self.opt)
-            self.scaler.update()
-            self.opt.zero_grad()
-
-            if self.step % self.update_ema_every == 0:
-                self.step_ema()
-
-            if self.step != 0 and self.step % self.save_and_sample_every == 0:
-                self.ema_model.eval()
-
-                with torch.no_grad():
-                    milestone = self.step // self.save_and_sample_every
-                    num_samples = self.num_sample_rows ** 2
-                    batches = num_to_groups(num_samples, self.batch_size)
-
-                    all_videos_list = list(
-                        map(lambda n: self.ema_model.sample(batch_size=n), batches))
-                    all_videos_list = torch.cat(all_videos_list, dim=0)
-
-                all_videos_list = F.pad(all_videos_list, (2, 2, 2, 2))
-
-                one_gif = rearrange(
-                    all_videos_list, '(i j) c f h w -> c f (i h) (j w)', i=self.num_sample_rows)
-                video_folder = self.results_folder / f'gifs'
-                video_folder.mkdir(exist_ok=True, parents=True)
-                video_path = str(self.results_folder / f'gifs' / str(f'{milestone}.gif'))
-                video_tensor_to_gif(one_gif, video_path)
-                log = {**log, 'sample': video_path}
-
-                # Selects one random 2D image from each 3D Image
-                B, C, D, H, W = all_videos_list.shape
-                frame_idx = torch.randint(0, D, [B]).cuda()
-                frame_idx_selected = frame_idx.reshape(
-                    -1, 1, 1, 1, 1).repeat(1, C, 1, H, W)
-                frames = torch.gather(
-                    all_videos_list, 2, frame_idx_selected).squeeze(2)
-
-                image_folder = self.results_folder / f'image-samples'
-                image_folder.mkdir(exist_ok=True, parents=True)
-                path = str(self.results_folder / f'image-samples' /
-                           f'sample-{milestone}.jpg')
-                plt.figure(figsize=(50, 50))
-                cols = 5
-                for num, frame in enumerate(frames.cpu()):
-                    plt.subplot(
-                        math.ceil(len(frames) / cols), cols, num + 1)
-                    plt.axis('off')
-                    plt.imshow(frame[0], cmap='gray')
-                    plt.savefig(path)
-
-                self.save(milestone)
-
-            log_fn('Loss/train', log['loss'], self.step)
-            self.step += 1
-
-        print('training completed')

@@ -18,7 +18,7 @@ unet3d:
   _target_: src.models.ddpm.Unet3D
   dim: 64 #${data.dim} # 64  #this has to be the same as the vqgan now           # Spatial resolution, must match diffusion.image_size
   dim_mults: [1, 2, 4] #8]           # Multiplicative factors for channel scaling at each resolution
-  channels:  4 #64         # Number of channels (idk why we have 8 but ask later)
+  channels:  32 #4 #64         # Number of channels (idk why we have 8 but ask later)
 
 diffusion:
   _target_: src.models.ddpm.GaussianDiffusion
@@ -27,8 +27,10 @@ diffusion:
   num_frames: 28 #14 #$28 # ${data.dim}   #this has to be the same as the vqgan now                      
   timesteps:  300 #1000                   # Total number of diffusion steps
   loss_type: "l1"                   # Type of loss ("l1" or "l2")
-  channels: 4 #1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
-  vqgan_ckpt: /home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-04-29_20-46-55/checkpoints/last.ckpt
+  channels: 32 #1 # we have grayscale input for now (i.e., x, y, z input not c, x, y, z or some variation)
+  # this has 32 dim codebook vector with 64 encoder channels
+  vqgan_ckpt: /home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-07-11_16-43-12/checkpoints/last.ckpt
+  #/home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-04-29_20-46-55/checkpoints/last.ckpt
   #/home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-05-21_21-46-58/checkpoints/last.ckpt
   #/home/sampath/VertebralDiffusion/logs/train_vqgan_seg/runs/2025-04-29_20-46-55/checkpoints/last.ckpt
   cache_dir: ${paths.cache_dir} # Path to the cache directory for storing intermediate results
@@ -37,7 +39,7 @@ diffusion:
 optimizer:
   _target_: torch.optim.AdamW
   _partial_: true
-  lr: 1e-4
+  lr: 3e-5
   eps: 1e-08
   betas: [0.9, 0.999]
   weight_decay: 0.01
